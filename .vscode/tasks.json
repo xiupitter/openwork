@@ -1,0 +1,32 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "opencode-router: start with inspect",
+      "type": "shell",
+      "command": "bun",
+      "args": ["--inspect=127.0.0.1:9229", "src/cli.ts", "start"],
+      "options": {
+        "cwd": "${workspaceFolder}/packages/opencode-router",
+        "env": {}
+      },
+      "problemMatcher": {
+        "owner": "bun",
+        "pattern": { "regexp": "^.*$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsRegex": ".",
+          "endsRegex": ".*"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "isBackground": true,
+      "runOptions": {
+        "instanceLimit": 1
+      }
+    }
+  ]
+}

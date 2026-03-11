@@ -17,6 +17,7 @@ import { MediaStore } from "./media-store.js";
 import { buildPermissionRules, createClient } from "./opencode.js";
 import { chunkText, formatInputSummary, truncateText } from "./text.js";
 import { createSlackAdapter } from "./slack.js";
+import { createDingTalkAdapter } from "./dingtalk.js";
 import { createTelegramAdapter, isTelegramPeerId } from "./telegram.js";
 
 type Adapter = {
@@ -147,6 +148,7 @@ const TOOL_LABELS: Record<string, string> = {
 const CHANNEL_LABELS: Record<ChannelName, string> = {
   telegram: "Telegram",
   slack: "Slack",
+  dingtalk: "DingTalk",
 };
 
 const TYPING_INTERVAL_MS = 6000;
@@ -345,8 +347,12 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       const bot = config.telegramBots.find((entry) => entry.id === id);
       return typeof (bot as any)?.directory === "string" ? String((bot as any).directory).trim() : "";
     }
-    const app = config.slackApps.find((entry) => entry.id === id);
-    return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
+    if (channel === "slack") {
+      const app = config.slackApps.find((entry) => entry.id === id);
+      return typeof (app as any)?.directory === "string" ? String((app as any).directory).trim() : "";
+    }
+    const bot = config.dingtalkBots.find((entry) => entry.id === id);
+    return typeof (bot as any)?.directory === "string" ? String((bot as any).directory).trim() : "";
   };
 
   const resolveTelegramIdentityAccess = (
@@ -372,7 +378,10 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     if (channel === "telegram") {
       return config.telegramBots.map((bot) => ({ id: bot.id, directory: (bot.directory ?? "").trim() }));
     }
-    return config.slackApps.map((app) => ({ id: app.id, directory: (app.directory ?? "").trim() }));
+    if (channel === "slack") {
+      return config.slackApps.map((app) => ({ id: app.id, directory: (app.directory ?? "").trim() }));
+    }
+    return config.dingtalkBots.map((bot) => ({ id: bot.id, directory: (bot.directory ?? "").trim() }));
   };
 
   const getClient = (directory?: string | null) => {
@@ -397,6 +406,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       opencodeDirectory: config.opencodeDirectory,
       telegramBots: config.telegramBots.map((bot) => ({ id: bot.id, enabled: bot.enabled !== false })),
       slackApps: config.slackApps.map((app) => ({ id: app.id, enabled: app.enabled !== false })),
+      dingtalkBots: config.dingtalkBots.map((bot) => ({ id: bot.id, enabled: bot.enabled !== false })),
       groupsEnabled: config.groupsEnabled,
       permissionMode: config.permissionMode,
       toolUpdatesEnabled: config.toolUpdatesEnabled,
@@ -431,6 +441,18 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       const base = createSlackAdapter(app, config, logger, handleInbound, undefined, mediaStore);
       adapters.set(key, { ...base, key });
     }
+
+    const enabledDingTalk = config.dingtalkBots.filter((bot) => bot.enabled !== false);
+    if (enabledDingTalk.length === 0) {
+      logger.info("dingtalk adapters disabled");
+      reportStatus?.("DingTalk adapters disabled.");
+    }
+    for (const bot of enabledDingTalk) {
+      const key = adapterKey("dingtalk", bot.id);
+      logger.debug({ identityId: bot.id }, "dingtalk adapter enabled");
+      const base = createDingTalkAdapter(bot, config, logger, handleInbound);
+      adapters.set(key, { ...base, key });
+    }
   }
 
   const keyForSession = (directory: string, sessionID: string) => `${directory}::${sessionID}`;
@@ -460,13 +482,17 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     if (relativePath === ".") return true;
     if (relativePath.startsWith("..") || isAbsolute(relativePath)) return false;
     const boundary = workspaceRoot.endsWith(sep) ? workspaceRoot : `${workspaceRoot}${sep}`;
-    return resolved === workspaceRoot || resolved.startsWith(boundary);
+    const a = process.platform === "win32" ? resolved.toLowerCase().replace(/\\/g, "/") : resolved;
+    const b = process.platform === "win32" ? boundary.toLowerCase().replace(/\\/g, "/") : boundary;
+    const rootNorm = process.platform === "win32" ? workspaceRoot.toLowerCase().replace(/\\/g, "/") : workspaceRoot;
+    return a === rootNorm || a.startsWith(b);
   };
 
   const resolveScopedDirectory = (input: string): { ok: true; directory: string } | { ok: false; error: string } => {
     const trimmed = input.trim();
     if (!trimmed) return { ok: false, error: "Directory is required." };
-    const resolved = resolve(isAbsolute(trimmed) ? trimmed : join(workspaceRoot, trimmed));
+    // Resolve relative paths from cwd (same as workspaceRoot), so e.g. "workspace" → cwd/workspace, not workspaceRoot/workspace (which would double "workspace")
+    const resolved = isAbsolute(trimmed) ? resolve(trimmed) : resolve(process.cwd(), trimmed);
     if (!isWithinWorkspaceRoot(resolved)) {
       return {
         ok: false,
@@ -546,7 +572,12 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       opencodeHealthy = Boolean((health as { healthy?: boolean }).healthy);
       opencodeVersion = (health as { version?: string }).version;
     } catch (error) {
-      logger.warn({ error }, "failed to reach opencode health");
+      const msg = error instanceof Error ? error.message : String(error);
+      const is401 = msg.includes("401") || msg.includes("Unauthorized");
+      logger.warn(
+        { error, hint: is401 ? "If opencode-url is OpenWork server, set OPENCODE_SERVER_TOKEN (Bearer) or OPENCODE_SERVER_USERNAME/PASSWORD (Basic)." : undefined },
+        "failed to reach opencode health",
+      );
       opencodeHealthy = false;
     }
 
@@ -749,6 +780,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           // WhatsApp removed; keep field for backward compatibility.
           whatsapp: false,
           slack: Array.from(adapters.keys()).some((key) => key.startsWith("slack:")),
+          dingtalk: Array.from(adapters.keys()).some((key) => key.startsWith("dingtalk:")),
         },
         config: {
           groupsEnabled,
@@ -1231,7 +1263,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           const identityIdRaw = filters?.identityId?.trim();
           let channel: ChannelName | undefined;
           if (channelRaw) {
-            if (channelRaw === "telegram" || channelRaw === "slack") {
+            if (channelRaw === "telegram" || channelRaw === "slack" || channelRaw === "dingtalk") {
               channel = channelRaw as ChannelName;
             } else {
               throw new Error("Invalid channel");
@@ -1251,7 +1283,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         },
         setBinding: async (input: { channel: string; identityId?: string; peerId: string; directory: string }) => {
           const channel = input.channel.trim().toLowerCase();
-          if (channel !== "telegram" && channel !== "slack") {
+          if (channel !== "telegram" && channel !== "slack" && channel !== "dingtalk") {
             throw new Error("Invalid channel");
           }
           const identityId = normalizeIdentityId(input.identityId);
@@ -1276,7 +1308,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         },
         clearBinding: async (input: { channel: string; identityId?: string; peerId: string }) => {
           const channel = input.channel.trim().toLowerCase();
-          if (channel !== "telegram" && channel !== "slack") {
+          if (channel !== "telegram" && channel !== "slack" && channel !== "dingtalk") {
             throw new Error("Invalid channel");
           }
           const identityId = normalizeIdentityId(input.identityId);
@@ -1298,7 +1330,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           autoBind?: boolean;
         }) => {
           const channelRaw = input.channel.trim().toLowerCase();
-          if (channelRaw !== "telegram" && channelRaw !== "slack") {
+          if (channelRaw !== "telegram" && channelRaw !== "slack" && channelRaw !== "dingtalk") {
             throw new Error("Invalid channel");
           }
           const channel = channelRaw as ChannelName;
@@ -1523,6 +1555,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
             targets,
           };
         },
+
       },
     );
   }
@@ -1898,10 +1931,11 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         seenToolStates: new Map(),
       };
       activeRuns.set(key, runState);
-      reportThinking(runState);
-      startTyping(runState);
       try {
         const effectiveModel = getUserModel(inbound.channel, inbound.identityId, peerKey, config.model);
+        if (effectiveModel) sessionModels.set(key, effectiveModel);
+        reportThinking(runState);
+        startTyping(runState);
         const messagingAgent = await loadMessagingAgentConfig();
         const effectiveInstructions = [messagingAgent.instructions, DEFAULT_MESSAGING_AGENT_INSTRUCTIONS]
           .map((value) => value.trim())
@@ -2030,9 +2064,16 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           }
         }
         
-        await sendText(inbound.channel, inbound.identityId, inbound.peerId, errorMessage, {
-          kind: "system",
-        });
+        try {
+          await sendText(inbound.channel, inbound.identityId, inbound.peerId, errorMessage, {
+            kind: "system",
+          });
+        } catch (sendError) {
+          logger.error(
+            { sendError: sendError instanceof Error ? sendError.message : String(sendError), originalError: errorDetails },
+            "failed to send error message to user; user may see no reply",
+          );
+        }
       } finally {
         stopTyping(key);
         reportDone(runState);

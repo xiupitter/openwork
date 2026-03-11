@@ -10,7 +10,7 @@ const packageDir = path.resolve(moduleDir, "..");
 dotenv.config({ path: path.join(packageDir, ".env") });
 dotenv.config();
 
-export type ChannelName = "telegram" | "slack";
+export type ChannelName = "telegram" | "slack" | "dingtalk";
 
 export type TelegramIdentity = {
   id: string;
@@ -33,26 +33,39 @@ export type SlackIdentity = {
   directory?: string;
 };
 
+export type DingTalkIdentity = {
+  id: string;
+  /** Stream Mode 凭证（推荐接入方式） */
+  clientId: string;
+  clientSecret: string;
+  enabled?: boolean;
+  directory?: string;
+};
+
 export type OpenCodeRouterConfigFile = {
   version: number;
   opencodeUrl?: string;
   opencodeDirectory?: string;
+  /** Bearer token for OpenWork server; env OPENCODE_SERVER_TOKEN takes precedence */
+  opencodeToken?: string;
+  /** Default LLM for messaging: "providerID/modelID" (e.g. "anthropic/claude-opus-4-5-20251101"); env OPENCODE_ROUTER_MODEL overrides */
+  model?: string;
   groupsEnabled?: boolean;
   channels?: {
     telegram?: {
       enabled?: boolean;
-      // New format (multi-bot)
       bots?: TelegramIdentity[];
-      // Legacy (single)
       token?: string;
     };
     slack?: {
       enabled?: boolean;
-      // New format (multi-app)
       apps?: SlackIdentity[];
-      // Legacy (single)
       botToken?: string;
       appToken?: string;
+    };
+    dingtalk?: {
+      enabled?: boolean;
+      robots?: DingTalkIdentity[];
     };
   };
 };
@@ -67,11 +80,15 @@ export type Config = {
   configFile: OpenCodeRouterConfigFile;
   opencodeUrl: string;
   opencodeDirectory: string;
+  /** Basic auth (when talking to OpenCode binary). */
   opencodeUsername?: string;
   opencodePassword?: string;
+  /** Bearer token (when talking to OpenWork server); preferred over Basic if set. */
+  opencodeToken?: string;
   model?: ModelRef;
   telegramBots: TelegramIdentity[];
   slackApps: SlackIdentity[];
+  dingtalkBots: DingTalkIdentity[];
   dataDir: string;
   dbPath: string;
   logFile: string;
@@ -225,6 +242,30 @@ function coerceSlackApps(file: OpenCodeRouterConfigFile): SlackIdentity[] {
   return [];
 }
 
+function coerceDingTalkBots(file: OpenCodeRouterConfigFile): DingTalkIdentity[] {
+  const dingtalk = file.channels?.dingtalk;
+  const robots = Array.isArray(dingtalk?.robots) ? (dingtalk.robots as unknown[]) : [];
+  const normalized: DingTalkIdentity[] = [];
+  for (const entry of robots) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const clientId = typeof record.clientId === "string" ? record.clientId.trim() : "";
+    const clientSecret = typeof record.clientSecret === "string" ? record.clientSecret.trim() : "";
+    if (!clientId || !clientSecret) continue;
+    const id = normalizeId(typeof record.id === "string" ? record.id : "default");
+    const directory = typeof record.directory === "string" ? record.directory.trim() : "";
+    normalized.push({
+      id,
+      clientId,
+      clientSecret,
+      enabled: record.enabled === undefined ? true : record.enabled === true,
+      ...(directory ? { directory } : {}),
+    });
+  }
+  if (normalized.length) return normalized;
+  return [];
+}
+
 export function loadConfig(
   env: EnvLike = process.env,
   options: { requireOpencode?: boolean } = {},
@@ -250,6 +291,7 @@ export function loadConfig(
   // for single-identity setups.
   const telegramBots = coerceTelegramBots(configFile);
   const slackApps = coerceSlackApps(configFile);
+  const dingtalkBots = coerceDingTalkBots(configFile);
 
   const envTelegram = env.TELEGRAM_BOT_TOKEN?.trim() ?? "";
   if (envTelegram && !telegramBots.some((bot) => bot.token === envTelegram)) {
@@ -260,15 +302,26 @@ export function loadConfig(
   if (envSlackBot && envSlackApp && !slackApps.some((app) => app.botToken === envSlackBot && app.appToken === envSlackApp)) {
     slackApps.unshift({ id: "env", botToken: envSlackBot, appToken: envSlackApp, enabled: true });
   }
+  const envDingTalkClientId = env.DINGTALK_CLIENT_ID?.trim() ?? "";
+  const envDingTalkClientSecret = env.DINGTALK_CLIENT_SECRET?.trim() ?? "";
+  if (envDingTalkClientId && envDingTalkClientSecret && !dingtalkBots.some((bot) => bot.clientId === envDingTalkClientId)) {
+    dingtalkBots.unshift({
+      id: "env",
+      clientId: envDingTalkClientId,
+      clientSecret: envDingTalkClientSecret,
+      enabled: true,
+    });
+  }
   const healthPort =
     parseInteger(env.OPENCODE_ROUTER_HEALTH_PORT) ??
     // Convenience alias (common on PaaS / local experiments)
     parseInteger(env.PORT) ??
     3005;
-  const model = parseModel(env.OPENCODE_ROUTER_MODEL);
+  const model = parseModel(env.OPENCODE_ROUTER_MODEL?.trim() || configFile.model?.trim());
 
   const telegramEnabledDefault = configFile.channels?.telegram?.enabled ?? true;
   const slackEnabledDefault = configFile.channels?.slack?.enabled ?? true;
+  const dingtalkEnabledDefault = configFile.channels?.dingtalk?.enabled ?? true;
 
   return {
     configPath,
@@ -277,11 +330,16 @@ export function loadConfig(
     opencodeDirectory: resolvedDirectory,
     opencodeUsername: env.OPENCODE_SERVER_USERNAME?.trim() || undefined,
     opencodePassword: env.OPENCODE_SERVER_PASSWORD?.trim() || undefined,
+    opencodeToken: env.OPENCODE_SERVER_TOKEN?.trim() || configFile.opencodeToken?.trim() || undefined,
     model,
     telegramBots: telegramBots.map((bot) => ({ ...bot, enabled: bot.enabled !== false && parseBoolean(env.TELEGRAM_ENABLED, telegramEnabledDefault) })),
     slackApps: slackApps.map((app) => ({
       ...app,
       enabled: app.enabled !== false && parseBoolean(env.SLACK_ENABLED, slackEnabledDefault),
+    })),
+    dingtalkBots: dingtalkBots.map((bot) => ({
+      ...bot,
+      enabled: bot.enabled !== false && parseBoolean(env.DINGTALK_ENABLED, dingtalkEnabledDefault),
     })),
     dataDir,
     dbPath,

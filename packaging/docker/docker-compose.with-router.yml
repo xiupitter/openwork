@@ -1,0 +1,26 @@
+# Compose file for OpenWork Host with pre-built opencode-router.
+# Requires running prepare-router-for-docker.sh from repo root before first build.
+#
+# From repo root:
+#   ./packaging/docker/prepare-router-for-docker.sh
+#   docker compose -f packaging/docker/docker-compose.with-router.yml up --build
+#
+# From packaging/docker:
+#   docker compose -f docker-compose.with-router.yml up --build
+
+services:
+  openwork-host:
+    build:
+      context: .
+      dockerfile: Dockerfile.with-router
+      args:
+        OPENWORK_ORCHESTRATOR_VERSION: 0.11.135
+    ports:
+      - "8787:8787"
+      - "3005:3005"
+    environment:
+      OPENWORK_DATA_DIR: /data/openwork-orchestrator
+      OPENWORK_SIDECAR_DIR: /data/sidecars
+    volumes:
+      - ./workspace:/workspace
+      - ./data:/data

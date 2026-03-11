@@ -1,0 +1,70 @@
+# OpenWork Host image that includes a pre-built opencode-router binary.
+#
+# The binary is NOT built inside Docker. You must build it on the host and place
+# it in the build context before building this image. See README or
+# prepare-router-for-docker.sh.
+#
+# Build (from repo root, after preparing the binary):
+#   ./packaging/docker/prepare-router-for-docker.sh
+#   docker build -f packaging/docker/Dockerfile.with-router -t openwork-with-router packaging/docker
+#
+# Or with custom binary path:
+#   docker build -f packaging/docker/Dockerfile.with-router \
+#     --build-arg OPENCODE_ROUTER_BINARY=./path/to/opencode-router \
+#     -t openwork-with-router packaging/docker
+
+FROM node:22-bookworm-slim
+
+ARG OPENWORK_ORCHESTRATOR_VERSION=0.11.22
+
+# Path to the pre-built opencode-router binary in build context (relative to context root).
+ARG OPENCODE_ROUTER_BINARY=opencode-router-bin/opencode-router
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    tar \
+    unzip \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g "openwork-orchestrator@${OPENWORK_ORCHESTRATOR_VERSION}"
+
+# Copy the host-built opencode-router binary into the image.
+# Must be built for Linux (e.g. bun-linux-x64) and placed in context by prepare-router-for-docker.sh.
+COPY ${OPENCODE_ROUTER_BINARY} /opt/openwork/opencode-router
+RUN chmod +x /opt/openwork/opencode-router
+
+# Persistent directories (mount volumes here on PaaS/SSH).
+ENV OPENWORK_DATA_DIR=/data/openwork-orchestrator
+ENV OPENWORK_SIDECAR_DIR=/data/sidecars
+
+# The workspace is mounted from the host/volume.
+ENV OPENWORK_WORKSPACE=/workspace
+
+# OpenWork host contract surface.
+EXPOSE 8787
+
+# opencode-router health (enabled in this image).
+EXPOSE 3005
+
+VOLUME ["/workspace", "/data"]
+
+# Run with opencode-router enabled using the copied binary.
+# --allow-external and --sidecar-source external are required when using --opencode-router-bin.
+CMD [
+  "openwork",
+  "serve",
+  "--workspace", "/workspace",
+  "--openwork-host", "0.0.0.0",
+  "--openwork-port", "8787",
+  "--opencode-host", "127.0.0.1",
+  "--opencode-port", "4096",
+  "--connect-host", "127.0.0.1",
+  "--cors", "*",
+  "--approval", "manual",
+  "--allow-external",
+  "--sidecar-source", "external",
+  "--opencode-router-bin", "/opt/openwork/opencode-router"
+]

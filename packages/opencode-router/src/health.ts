@@ -15,6 +15,7 @@ export type HealthSnapshot = {
     telegram: boolean;
     whatsapp: boolean;
     slack: boolean;
+    dingtalk: boolean;
   };
   config: {
     groupsEnabled: boolean;

@@ -1,0 +1,85 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach to opencode-router",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "address": "127.0.0.1",
+      "localRoot": "${workspaceFolder}/packages/opencode-router",
+      "remoteRoot": "${workspaceFolder}/packages/opencode-router",
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+      "sourceMaps": true,
+      "preLaunchTask": "opencode-router: start with inspect"
+    },
+    {
+      "name": "Attach to opencode-router (manual)",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "address": "127.0.0.1",
+      "localRoot": "${workspaceFolder}/packages/opencode-router",
+      "remoteRoot": "${workspaceFolder}/packages/opencode-router",
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+      "sourceMaps": true
+    },
+    {
+      "name": "Debug opencode-router (Bun 扩展，Windows 上易失败)",
+      "type": "bun",
+      "request": "launch",
+      "program": "${workspaceFolder}/packages/opencode-router/src/cli.ts",
+      "args": ["start"],
+      "cwd": "${workspaceFolder}/packages/opencode-router",
+      "stopOnEntry": false
+    },
+    {
+      "name": "Debug opencode-router (launch)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["--inspect=127.0.0.1:9229"],
+      "program": "${workspaceFolder}/packages/opencode-router/src/cli.ts",
+      "args": ["start"],
+      "cwd": "${workspaceFolder}/packages/opencode-router",
+      "console": "integratedTerminal",
+      "port": 9229,
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Debug current file (Bun)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["--inspect-wait"],
+      "program": "${file}",
+      "cwd": "${fileDirname}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Debug OpenWork Server",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["--inspect-wait"],
+      "program": "${workspaceFolder}/packages/server/src/cli.ts",
+      "args": [],
+      "cwd": "${workspaceFolder}/packages/server",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Debug Orchestrator",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["--inspect-wait"],
+      "program": "${workspaceFolder}/packages/orchestrator/src/cli.ts",
+      "args": [],
+      "cwd": "${workspaceFolder}/packages/orchestrator",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}

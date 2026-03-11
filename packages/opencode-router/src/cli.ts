@@ -13,6 +13,7 @@ import {
   readConfigFile,
   writeConfigFile,
   type ChannelName,
+  type DingTalkIdentity,
   type OpenCodeRouterConfigFile,
   type SlackIdentity,
   type TelegramIdentity,
@@ -60,7 +61,7 @@ function createAppLogger(config: ReturnType<typeof loadConfig>) {
 
 function createConsoleReporter(): BridgeReporter {
   const formatChannel = (channel: ChannelName, identityId: string) => {
-    const name = channel === "telegram" ? "Telegram" : "Slack";
+    const name = channel === "telegram" ? "Telegram" : channel === "slack" ? "Slack" : "DingTalk";
     return `${name}/${identityId}`;
   };
 
@@ -152,6 +153,36 @@ function deleteSlackApp(cfg: OpenCodeRouterConfigFile, idRaw: string): { next: O
   const filtered = apps.filter((a) => normalizeIdentityId(a.id) !== id);
   const deleted = filtered.length !== apps.length;
   next.channels.slack = { ...existing, apps: filtered };
+  return { next, deleted };
+}
+
+function upsertDingTalkBot(cfg: OpenCodeRouterConfigFile, identity: DingTalkIdentity): OpenCodeRouterConfigFile {
+  const next = { ...cfg };
+  next.channels = next.channels ?? {};
+  const existing = next.channels.dingtalk ?? {};
+  const robots = Array.isArray(existing.robots) ? existing.robots.slice() : [];
+  const id = normalizeIdentityId(identity.id);
+  const filtered = robots.filter((b) => normalizeIdentityId(b.id) !== id);
+  filtered.push({
+    id,
+    enabled: identity.enabled !== false,
+    clientId: identity.clientId,
+    clientSecret: identity.clientSecret,
+    ...(identity.directory ? { directory: identity.directory } : {}),
+  });
+  next.channels.dingtalk = { ...existing, enabled: true, robots: filtered };
+  return next;
+}
+
+function deleteDingTalkBot(cfg: OpenCodeRouterConfigFile, idRaw: string): { next: OpenCodeRouterConfigFile; deleted: boolean } {
+  const id = normalizeIdentityId(idRaw);
+  const next = { ...cfg };
+  next.channels = next.channels ?? {};
+  const existing = next.channels.dingtalk ?? {};
+  const robots = Array.isArray(existing.robots) ? existing.robots.slice() : [];
+  const filtered = robots.filter((b) => normalizeIdentityId(b.id) !== id);
+  const deleted = filtered.length !== robots.length;
+  next.channels.dingtalk = { ...existing, robots: filtered };
   return { next, deleted };
 }
 
@@ -252,13 +283,19 @@ program
     const config = loadConfig(process.env, { requireOpencode: false });
     const telegram = config.telegramBots.map((b) => ({ id: b.id, enabled: b.enabled !== false }));
     const slack = config.slackApps.map((a) => ({ id: a.id, enabled: a.enabled !== false }));
+    const dingtalk = config.dingtalkBots.map((b) => ({ id: b.id, enabled: b.enabled !== false }));
     if (useJson) {
       outputJson({
         config: config.configPath,
         healthPort: config.healthPort ?? null,
         telegram,
         slack,
-        opencode: { url: config.opencodeUrl, directory: config.opencodeDirectory },
+        dingtalk,
+        opencode: {
+          url: config.opencodeUrl,
+          directory: config.opencodeDirectory,
+          defaultModel: config.model ? `${config.model.providerID}/${config.model.modelID}` : null,
+        },
       });
       return;
     }
@@ -266,7 +303,9 @@ program
     console.log(`Health port: ${config.healthPort ?? "(not set)"}`);
     console.log(`Telegram bots: ${telegram.length}`);
     console.log(`Slack apps: ${slack.length}`);
+    console.log(`DingTalk bots: ${dingtalk.length}`);
     console.log(`opencode URL: ${config.opencodeUrl}`);
+    console.log(`Default model: ${config.model ? `${config.model.providerID}/${config.model.modelID}` : "(OpenCode default)"}`);
   });
 
 // -----------------------------------------------------------------------------
@@ -429,6 +468,57 @@ slack
     process.exit(deleted ? 0 : 1);
   });
 
+const dingtalk = program.command("dingtalk").description("DingTalk robot identities");
+
+dingtalk
+  .command("list")
+  .description("List DingTalk robot identities")
+  .action(() => {
+    const useJson = program.opts().json;
+    const config = loadConfig(process.env, { requireOpencode: false });
+    const items = config.dingtalkBots.map((b) => ({ id: b.id, enabled: b.enabled !== false }));
+    if (useJson) outputJson({ items });
+    else for (const item of items) console.log(`${item.id} ${item.enabled ? "enabled" : "disabled"}`);
+  });
+
+dingtalk
+  .command("add")
+  .argument("<clientId>", "Stream client id (AppKey)")
+  .argument("<clientSecret>", "Stream client secret (AppSecret)")
+  .option("--id <id>", "Identity id (default: default)")
+  .option("--disabled", "Add identity but disable it", false)
+  .description("Add or update a DingTalk robot identity")
+  .action((clientId: string, clientSecret: string, opts: { id?: string; disabled?: boolean }) => {
+    const useJson = program.opts().json;
+    const config = loadConfig(process.env, { requireOpencode: false });
+    const id = normalizeIdentityId(opts.id);
+    const enabled = !opts.disabled;
+    updateConfig(config.configPath, (cfg) =>
+      upsertDingTalkBot(cfg, {
+        id,
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+        enabled,
+      }),
+    );
+    if (useJson) outputJson({ success: true, id, enabled });
+    else console.log(`Saved DingTalk identity: ${id}`);
+  });
+
+dingtalk
+  .command("remove")
+  .argument("<id>", "Identity id")
+  .description("Remove a DingTalk identity")
+  .action((idRaw: string) => {
+    const useJson = program.opts().json;
+    const config = loadConfig(process.env, { requireOpencode: false });
+    const { next, deleted } = deleteDingTalkBot(readConfigFile(config.configPath).config, idRaw);
+    writeConfigFile(config.configPath, next);
+    if (useJson) outputJson({ success: deleted, id: normalizeIdentityId(idRaw) });
+    else console.log(deleted ? `Removed DingTalk identity: ${normalizeIdentityId(idRaw)}` : "Identity not found.");
+    process.exit(deleted ? 0 : 1);
+  });
+
 // -----------------------------------------------------------------------------
 // Bindings
 // -----------------------------------------------------------------------------
@@ -437,7 +527,7 @@ const bindings = program.command("bindings").description("Manage identity-scoped
 
 bindings
   .command("list")
-  .option("--channel <channel>", "telegram|slack")
+  .option("--channel <channel>", "telegram|slack|dingtalk")
   .option("--identity <id>", "Identity id")
   .description("List bindings")
   .action((opts: { channel?: string; identity?: string }) => {
@@ -447,7 +537,11 @@ bindings
     const channelRaw = opts.channel?.trim().toLowerCase();
     const identityId = opts.identity?.trim() ? normalizeIdentityId(opts.identity) : undefined;
     const channel: ChannelName | undefined =
-      channelRaw === "telegram" || channelRaw === "slack" ? (channelRaw as ChannelName) : channelRaw ? (outputError("Invalid channel"), undefined) : undefined;
+      channelRaw === "telegram" || channelRaw === "slack" || channelRaw === "dingtalk"
+        ? (channelRaw as ChannelName)
+        : channelRaw
+          ? (outputError("Invalid channel"), undefined)
+          : undefined;
     const items = store
       .listBindings({ ...(channel ? { channel } : {}), ...(identityId ? { identityId } : {}) })
       .map((b) => ({
@@ -464,7 +558,7 @@ bindings
 
 bindings
   .command("set")
-  .requiredOption("--channel <channel>", "telegram|slack")
+  .requiredOption("--channel <channel>", "telegram|slack|dingtalk")
   .requiredOption("--identity <id>", "Identity id")
   .requiredOption("--peer <peerId>", "Peer id")
   .requiredOption("--dir <directory>", "Directory")
@@ -474,7 +568,7 @@ bindings
     const config = loadConfig(process.env, { requireOpencode: false });
     const store = new BridgeStore(config.dbPath);
     const channelRaw = opts.channel.trim().toLowerCase();
-    if (channelRaw !== "telegram" && channelRaw !== "slack") outputError("Invalid channel");
+    if (channelRaw !== "telegram" && channelRaw !== "slack" && channelRaw !== "dingtalk") outputError("Invalid channel");
     const identityId = normalizeIdentityId(opts.identity);
     const peerId = opts.peer.trim();
     const directory = opts.dir.trim();
@@ -488,7 +582,7 @@ bindings
 
 bindings
   .command("clear")
-  .requiredOption("--channel <channel>", "telegram|slack")
+  .requiredOption("--channel <channel>", "telegram|slack|dingtalk")
   .requiredOption("--identity <id>", "Identity id")
   .requiredOption("--peer <peerId>", "Peer id")
   .description("Clear a binding")
@@ -497,7 +591,7 @@ bindings
     const config = loadConfig(process.env, { requireOpencode: false });
     const store = new BridgeStore(config.dbPath);
     const channelRaw = opts.channel.trim().toLowerCase();
-    if (channelRaw !== "telegram" && channelRaw !== "slack") outputError("Invalid channel");
+    if (channelRaw !== "telegram" && channelRaw !== "slack" && channelRaw !== "dingtalk") outputError("Invalid channel");
     const identityId = normalizeIdentityId(opts.identity);
     const peerId = opts.peer.trim();
     const ok = store.deleteBinding(channelRaw as ChannelName, identityId, peerId);
@@ -515,7 +609,7 @@ bindings
 program
   .command("send")
   .description("Send a test message and/or media")
-  .requiredOption("--channel <channel>", "telegram or slack")
+  .requiredOption("--channel <channel>", "telegram, slack or dingtalk")
   .requiredOption("--identity <id>", "Identity id")
   .requiredOption("--to <recipient>", "Recipient ID (chat ID or peerId)")
   .option("--message <text>", "Message text to send")
@@ -535,8 +629,8 @@ program
   }) => {
     const useJson = program.opts().json;
     const channelRaw = opts.channel.trim().toLowerCase();
-    if (channelRaw !== "telegram" && channelRaw !== "slack") {
-      outputError("Invalid channel. Must be 'telegram' or 'slack'.");
+    if (channelRaw !== "telegram" && channelRaw !== "slack" && channelRaw !== "dingtalk") {
+      outputError("Invalid channel. Must be 'telegram', 'slack' or 'dingtalk'.");
     }
 
     const config = loadConfig(process.env, { requireOpencode: false });
@@ -581,7 +675,7 @@ program
             });
           }
         }
-      } else {
+      } else if (channelRaw === "slack") {
         const app = config.slackApps.find((a) => a.id === identityId);
         if (!app) throw new Error(`Slack identity not found: ${identityId}`);
         const web = new WebClient(app.botToken);
@@ -604,6 +698,8 @@ program
             ...(caption ? { initial_comment: caption } : {}),
           });
         }
+      } else {
+        throw new Error("DingTalk test send via CLI is not supported in Stream-only mode. Use /send HTTP API or a bound session.");
       }
 
       if (useJson)
