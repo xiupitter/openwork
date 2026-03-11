@@ -21,6 +21,10 @@ services:
     environment:
       OPENWORK_DATA_DIR: /data/openwork-orchestrator
       OPENWORK_SIDECAR_DIR: /data/sidecars
+      # DingTalk: uncomment and set (or use .env with DINGTALK_CLIENT_ID / DINGTALK_CLIENT_SECRET)
+      # DINGTALK_CLIENT_ID: "your-client-id"
+      # DINGTALK_CLIENT_SECRET: "your-client-secret"
+      # DINGTALK_ENABLED: "1"
     volumes:
       - ./workspace:/workspace
       - ./data:/data

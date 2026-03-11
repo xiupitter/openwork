@@ -15,10 +15,7 @@
 
 FROM node:22-bookworm-slim
 
-ARG OPENWORK_ORCHESTRATOR_VERSION=0.11.22
-
-# Path to the pre-built opencode-router binary in build context (relative to context root).
-ARG OPENCODE_ROUTER_BINARY=opencode-router-bin/opencode-router
+ARG OPENWORK_ORCHESTRATOR_VERSION=0.11.135
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -27,14 +24,97 @@ RUN apt-get update \
     git \
     tar \
     unzip \
+    build-essential \
+    wget \
+    gnupg \
+    libssl-dev \
+    zlib1g-dev \
+    libncurses5-dev \
+    libgdbm-dev \
+    libreadline-dev \
+    libffi-dev \
+    libsqlite3-dev \
+    # Playwright / Chromium / chrome-devtools-mcp runtime deps (Debian bookworm)
+    libglib2.0-0 \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libatspi2.0-0 \
+    libdrm2 \
+    libdbus-1-3 \
+    libx11-xcb1 \
+    libxcb1 \
+    libxext6 \
+    libxshmfence1 \
+    libxrender1 \
+    libx11-6 \
+    libxss1 \
+    libxtst6 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libcairo2 \
+    libcups2 \
+    libexpat1 \
+    libfontconfig1 \
+    libfreetype6 \
+    libgtk-3-0 \
+    chromium \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g "openwork-orchestrator@${OPENWORK_ORCHESTRATOR_VERSION}"
 
+
+# Install Python 3.13 into /opt/python313 with pip.
+ENV PYTHON_VERSION=3.13.1
+RUN wget -q https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz -O /tmp/Python-${PYTHON_VERSION}.tgz \
+  && tar -xzf /tmp/Python-${PYTHON_VERSION}.tgz -C /tmp \
+  && cd /tmp/Python-${PYTHON_VERSION} \
+  && ./configure --prefix=/opt/python313 --with-ensurepip=install --enable-optimizations=no \
+  && make -j"$(nproc)" \
+  && make install \
+  && cd / \
+  && rm -rf /tmp/Python-${PYTHON_VERSION} /tmp/Python-${PYTHON_VERSION}.tgz
+
+# Ensure Python 3.13 binaries are on PATH.
+ENV PATH="/opt/python313/bin:${PATH}"
+
+# Install bun into /root/.bun and expose it on PATH.
+ENV BUN_INSTALL=/root/.bun
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="${BUN_INSTALL}/bin:${PATH}"
+
+# Enable pnpm via corepack and prepare the exact version used in the dev stack.
+RUN corepack enable && corepack prepare pnpm@10.27.0 --activate
+
+# Pre-install Playwright Chromium browser binaries so tests can run without extra downloads.
+# Use npx with --yes to avoid interactive prompts during docker build.
+RUN npx --yes playwright@latest install chromium
+
+# Install extra Playwright helper packages globally.
+RUN npm install -g playwright-extra puppeteer-extra-plugin-stealth
+
+# Chrome DevTools MCP server (uses Puppeteer). Use system Chromium so Puppeteer does not download its own.
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
+# Global install so the binary is on PATH; invoke as: chrome-devtools-mcp or npx -y chrome-devtools-mcp@latest
+RUN npm install -g chrome-devtools-mcp@latest
+ENV PATH="/usr/local/bin:${PATH}"
+
 # Copy the host-built opencode-router binary into the image.
-# Must be built for Linux (e.g. bun-linux-x64) and placed in context by prepare-router-for-docker.sh.
+# Must be built for Linux (e.g. bun-linux-x64) and placed in context by prepare-router-for-docker.sh
+# or build-router-in-docker.ps1. Build context must be packaging/docker (so opencode-router-bin/ exists).
+# Override path with --build-arg OPENCODE_ROUTER_BINARY=opencode-router-bin/opencode-router .
+ARG OPENCODE_ROUTER_BINARY=opencode-router-bin/opencode-router
 COPY ${OPENCODE_ROUTER_BINARY} /opt/openwork/opencode-router
-RUN chmod +x /opt/openwork/opencode-router
+RUN chmod +x /opt/openwork/opencode-router && test -f /opt/openwork/opencode-router || (echo "ERROR: opencode-router binary missing. Run from repo root: .\\packaging\\docker\\build-router-in-docker.ps1 then rebuild with context packaging/docker." && exit 1)
 
 # Persistent directories (mount volumes here on PaaS/SSH).
 ENV OPENWORK_DATA_DIR=/data/openwork-orchestrator
@@ -51,20 +131,11 @@ EXPOSE 3005
 
 VOLUME ["/workspace", "/data"]
 
-# Run with opencode-router enabled using the copied binary.
-# --allow-external and --sidecar-source external are required when using --opencode-router-bin.
-CMD [
-  "openwork",
-  "serve",
-  "--workspace", "/workspace",
-  "--openwork-host", "0.0.0.0",
-  "--openwork-port", "8787",
-  "--opencode-host", "127.0.0.1",
-  "--opencode-port", "4096",
-  "--connect-host", "127.0.0.1",
-  "--cors", "*",
-  "--approval", "manual",
-  "--allow-external",
-  "--sidecar-source", "external",
-  "--opencode-router-bin", "/opt/openwork/opencode-router"
-]
+# Run with opencode-router from copied binary; opencode and openwork-server use
+# sidecar-source auto (download to OPENWORK_SIDECAR_DIR when missing).
+# --allow-external is required when using --opencode-router-bin.
+CMD ["openwork", "serve", "--workspace", "/workspace", \
+  "--openwork-host", "0.0.0.0", "--openwork-port", "8787", \
+  "--opencode-host", "127.0.0.1", "--opencode-port", "4096", \
+  "--connect-host", "127.0.0.1", "--cors", "*", \
+  "--approval", "manual", "--allow-external", "--opencode-router-bin", "/opt/openwork/opencode-router"]
