@@ -46,3 +46,4 @@ vendor/opencode/
 .opencode/openwork/
 .vercel
 .env*.local
+.claude/*

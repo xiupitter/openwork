@@ -15,9 +15,10 @@ const jetbrains = JetBrains_Mono({
 });
 
 export const metadata = {
-  title: "OpenWork — Local-first, open-source Cowork alternative",
+  metadataBase: new URL("https://openwork.software"),
+  title: "OpenWork — The open source Claude Cowork alternative",
   description:
-    "OpenWork is the open-source Cowork alternative powered by OpenCode—run local-first workflows with any model, and extend with skills.",
+    "Bring your own model and provider, wire in your tools and context, and ship reusable agent setups across your org — with guardrails built in.",
   openGraph: {
     images: ["/og-image-clean.png"]
   },

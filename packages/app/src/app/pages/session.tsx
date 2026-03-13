@@ -18,7 +18,6 @@ import type {
   WorkspaceConnectionState,
   WorkspaceDisplay,
   WorkspaceSessionGroup,
-  StartupPreference,
 } from "../types";
 
 import {
@@ -30,13 +29,14 @@ import {
   type OpenworkServerInfo,
   type WorkspaceInfo,
 } from "../lib/tauri";
+import { createWorkspaceShellLayout } from "../lib/workspace-shell-layout";
 
 import {
   Box,
+  ChevronLeft,
+  ChevronRight,
   Check,
   Circle,
-  Cpu,
-  HeartPulse,
   HardDrive,
   History,
   ListTodo,
@@ -47,7 +47,6 @@ import {
   MoreHorizontal,
   Redo2,
   Search,
-  Settings,
   Shield,
   SlidersHorizontal,
   Undo2,
@@ -73,7 +72,6 @@ import type {
   OpenworkServerClient,
   OpenworkServerSettings,
   OpenworkServerStatus,
-  OpenworkSoulStatus,
   OpenworkWorkspaceExport,
 } from "../lib/openwork-server";
 import { DEFAULT_OPENWORK_PUBLISHER_BASE_URL, publishOpenworkBundleJson } from "../lib/publisher";
@@ -89,7 +87,6 @@ import { finishPerf, perfNow, recordPerfLog } from "../lib/perf-log";
 import { normalizeLocalFilePath } from "../lib/local-file-path";
 
 import browserSetupTemplate from "../data/commands/browser-setup.md?raw";
-import soulSetupTemplate from "../data/commands/give-me-a-soul.md?raw";
 
 import MessageList from "../components/session/message-list";
 import Composer from "../components/session/composer";
@@ -106,6 +103,7 @@ export type SessionViewProps = {
   tab: DashboardTab;
   setTab: (tab: DashboardTab) => void;
   setSettingsTab: (tab: SettingsTab) => void;
+  toggleSettings: () => void;
   activeWorkspaceDisplay: WorkspaceDisplay;
   activeWorkspaceRoot: string;
   workspaces: WorkspaceInfo[];
@@ -117,7 +115,6 @@ export type SessionViewProps = {
   recoverWorkspace: (workspaceId: string) => Promise<boolean> | boolean;
   editWorkspaceConnection: (workspaceId: string) => void;
   forgetWorkspace: (workspaceId: string) => void;
-  soulStatusByWorkspaceId: Record<string, OpenworkSoulStatus | null>;
   openCreateWorkspace: () => void;
   openCreateRemoteWorkspace: () => void;
   importWorkspaceConfig: () => void;
@@ -126,7 +123,6 @@ export type SessionViewProps = {
   exportWorkspaceBusy: boolean;
   clientConnected: boolean;
   openworkServerStatus: OpenworkServerStatus;
-  startupPreference: StartupPreference | null;
   openworkServerClient: OpenworkServerClient | null;
   openworkServerSettings: OpenworkServerSettings;
   openworkServerHostInfo: OpenworkServerInfo | null;
@@ -184,6 +180,17 @@ export type SessionViewProps = {
   mcpStatus: string | null;
   skills: SkillCard[];
   skillsStatus: string | null;
+  showSkillReloadBanner: boolean;
+  reloadBannerTitle: string;
+  reloadBannerBody: string;
+  reloadBannerBlocked: boolean;
+  reloadBannerActiveCount: number;
+  canReloadWorkspace: boolean;
+  reloadWorkspaceEngine: () => Promise<void>;
+  forceStopActiveConversations: () => Promise<void>;
+  dismissReloadBanner: () => void;
+  reloadBusy: boolean;
+  reloadError: string | null;
   busy: boolean;
   prompt: string;
   setPrompt: (value: string) => void;
@@ -206,8 +213,13 @@ export type SessionViewProps = {
   sessionStatus: string;
   renameSession: (sessionId: string, title: string) => Promise<void>;
   startProviderAuth: (providerId?: string) => Promise<ProviderOAuthStartResult>;
-  completeProviderAuthOAuth: (providerId: string, methodIndex: number, code?: string) => Promise<string | void>;
+  completeProviderAuthOAuth: (
+    providerId: string,
+    methodIndex: number,
+    code?: string
+  ) => Promise<{ connected: boolean; pending?: boolean; message?: string }>;
   submitProviderApiKey: (providerId: string, apiKey: string) => Promise<string | void>;
+  refreshProviders: () => Promise<unknown>;
   openProviderAuthModal: () => Promise<void>;
   closeProviderAuthModal: () => void;
   providerAuthModalOpen: boolean;
@@ -261,16 +273,6 @@ const BROWSER_SETUP_TEMPLATE = (() => {
   const name = parsed?.data?.name?.trim() || "browser-setup";
   const description = parsed?.data?.description?.trim() || "Guide the user through browser automation setup";
   const body = (parsed?.body ?? browserSetupTemplate).trim();
-  return { name, description, body };
-})();
-
-const SOUL_SETUP_TEMPLATE = (() => {
-  const parsed = parseTemplateFrontmatter(soulSetupTemplate);
-  const name = parsed?.data?.name?.trim() || "give-me-a-soul";
-  const description =
-    parsed?.data?.description?.trim() ||
-    "Enable optional soul mode with persistent memory and scheduled check-ins";
-  const body = (parsed?.body ?? soulSetupTemplate).trim();
   return { name, description, body };
 })();
 
@@ -346,6 +348,13 @@ export default function SessionView(props: SessionViewProps) {
   const showRightSidebarSelection = createMemo(() => false);
   let commandPaletteInputEl: HTMLInputElement | undefined;
   const commandPaletteOptionRefs: HTMLButtonElement[] = [];
+  const {
+    leftSidebarWidth,
+    rightSidebarExpanded,
+    rightSidebarWidth,
+    startLeftSidebarResize,
+    toggleRightSidebar,
+  } = createWorkspaceShellLayout({ expandedRightWidth: 280 });
 
   createEffect(() => {
     if (!isTauriRuntime()) {
@@ -2521,15 +2530,19 @@ export default function SessionView(props: SessionViewProps) {
   };
 
   const handleProviderAuthOAuth = async (providerId: string, methodIndex: number, code?: string) => {
-    if (providerAuthActionBusy()) return;
+    if (providerAuthActionBusy()) return { connected: false, pending: true };
     setProviderAuthActionBusy(true);
     try {
-      const message = await props.completeProviderAuthOAuth(providerId, methodIndex, code);
-      setToastMessage(message || "Provider connected");
-      props.closeProviderAuthModal();
+      const result = await props.completeProviderAuthOAuth(providerId, methodIndex, code);
+      if (result.connected) {
+        setToastMessage(result.message || "Provider connected");
+        props.closeProviderAuthModal();
+      }
+      return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : "OAuth failed";
       setToastMessage(message);
+      return { connected: false };
     } finally {
       setProviderAuthActionBusy(false);
     }
@@ -2957,46 +2970,15 @@ export default function SessionView(props: SessionViewProps) {
       // Fall back to prompt-based setup below.
     }
 
-    const text = BROWSER_SETUP_TEMPLATE.body || "Help me set up browser automation.";
-    handleSendPrompt({
-      mode: "prompt",
-      text,
-      resolvedText: text,
-      parts: [{ type: "text", text }],
-      attachments: [],
-    });
-  };
-
-  const handleSoulQuickstart = async () => {
-    const name = SOUL_SETUP_TEMPLATE.name;
-    const slashCommand = `/${name}`;
-    try {
-      const commands = await props.listCommands();
-      const hasCommand = commands.some((cmd) => cmd.name === name);
-      if (hasCommand) {
-        handleSendPrompt({
-          mode: "prompt",
-          text: slashCommand,
-          resolvedText: slashCommand,
-          parts: [{ type: "text", text: slashCommand }],
-          attachments: [],
-          command: { name, arguments: "" },
-        });
-        return;
-      }
-    } catch {
-      // Fall back to prompt-based setup below.
-    }
-
-    const text = SOUL_SETUP_TEMPLATE.body || "Give me a soul.";
-    handleSendPrompt({
-      mode: "prompt",
-      text,
-      resolvedText: text,
-      parts: [{ type: "text", text }],
-      attachments: [],
-    });
-  };
+  const text = BROWSER_SETUP_TEMPLATE.body || "Help me set up browser automation.";
+  handleSendPrompt({
+    mode: "prompt",
+    text,
+    resolvedText: text,
+    parts: [{ type: "text", text }],
+    attachments: [],
+  });
+};
 
   const isSandboxWorkspace = createMemo(() => Boolean((props.activeWorkspaceDisplay as any)?.sandboxContainerName?.trim()));
 
@@ -3324,24 +3306,6 @@ export default function SessionView(props: SessionViewProps) {
     props.setView("dashboard");
   };
 
-  const openSoul = (workspaceId?: string) => {
-    const id = (workspaceId ?? props.activeWorkspaceId).trim();
-    if (!id) return;
-    void (async () => {
-      if (id !== props.activeWorkspaceId) {
-        await Promise.resolve(props.activateWorkspace(id));
-      }
-      props.setTab("soul");
-      props.setView("dashboard");
-    })();
-  };
-
-  const soulModeEnabled = createMemo(() =>
-    Boolean(props.soulStatusByWorkspaceId[props.activeWorkspaceId]?.enabled)
-  );
-
-  const soulNavIconClass = () => (soulModeEnabled() ? "soul-nav-icon-active" : "");
-
   const openProviderAuth = () => {
     void props.openProviderAuthModal().catch((error) => {
       const message = error instanceof Error ? error.message : "Connect failed";
@@ -3349,9 +3313,35 @@ export default function SessionView(props: SessionViewProps) {
     });
   };
 
+  const rightSidebarNavButton = (
+    label: string,
+    icon: any,
+    active: boolean,
+    onClick: () => void,
+  ) => (
+    <button
+      type="button"
+      class={`h-9 w-full rounded-lg text-[13px] font-medium transition-colors ${
+        active ? "bg-gray-4 text-gray-12" : "text-gray-11 hover:text-gray-12 hover:bg-gray-3"
+      } ${rightSidebarExpanded() ? "flex items-center gap-2.5 px-3 justify-start" : "flex items-center justify-center px-0"}`}
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+    >
+      {icon}
+      <Show when={rightSidebarExpanded()}>{label}</Show>
+    </button>
+  );
+
   return (
     <div class="flex h-screen w-full bg-dls-sidebar text-gray-12 font-sans overflow-hidden">
-      <aside class="w-[260px] hidden lg:flex flex-col bg-dls-sidebar border-r border-gray-6/70 p-3 pt-5">
+      <aside
+        class="relative hidden lg:flex shrink-0 flex-col bg-dls-sidebar border-r border-gray-6/70 p-3 pt-5"
+        style={{
+          width: `${leftSidebarWidth()}px`,
+          "min-width": `${leftSidebarWidth()}px`,
+        }}
+      >
         <div class="flex-1 overflow-y-auto">
           <Show when={showUpdatePill()}>
             <button
@@ -3389,13 +3379,11 @@ export default function SessionView(props: SessionViewProps) {
             workspaceConnectionStateById={props.workspaceConnectionStateById}
             newTaskDisabled={props.newTaskDisabled}
             importingWorkspaceConfig={props.importingWorkspaceConfig}
-            soulStatusByWorkspaceId={props.soulStatusByWorkspaceId}
             onActivateWorkspace={props.activateWorkspace}
             onOpenSession={openSessionFromList}
             onCreateTaskInWorkspace={createTaskInWorkspace}
             onOpenRenameWorkspace={props.openRenameWorkspace}
             onShareWorkspace={(workspaceId) => setShareWorkspaceId(workspaceId)}
-            onOpenSoul={openSoul}
             onRevealWorkspace={revealWorkspaceInFinder}
             onRecoverWorkspace={props.recoverWorkspace}
             onTestWorkspaceConnection={props.testWorkspaceConnection}
@@ -3406,6 +3394,12 @@ export default function SessionView(props: SessionViewProps) {
             onImportWorkspaceConfig={props.importWorkspaceConfig}
           />
         </div>
+        <div
+          class="absolute right-0 top-0 hidden h-full w-2 translate-x-1/2 cursor-col-resize bg-transparent transition-colors hover:bg-gray-6/40 lg:block"
+          onPointerDown={startLeftSidebarResize}
+          title="Resize workspace column"
+          aria-label="Resize workspace column"
+        />
 
       </aside>
 
@@ -3640,6 +3634,53 @@ export default function SessionView(props: SessionViewProps) {
           </div>
         </Show>
 
+        <Show when={props.showSkillReloadBanner}>
+          <div class="border-b border-amber-6/50 bg-amber-2/70 px-6 py-3">
+            <div class="mx-auto flex w-full max-w-[800px] flex-col gap-3 rounded-2xl border border-amber-6/60 bg-amber-1/80 px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+              <div class="min-w-0">
+                <div class="text-sm font-medium text-amber-11">{props.reloadBannerTitle}</div>
+                <div class="mt-0.5 text-xs text-amber-11/80">
+                  {props.reloadBannerBody}
+                  <Show when={props.reloadBannerBlocked}>
+                    <span>
+                      {` Reloading stops ${props.reloadBannerActiveCount} active conversation${props.reloadBannerActiveCount === 1 ? "" : "s"}.`}
+                    </span>
+                  </Show>
+                </div>
+                <Show when={props.reloadError}>
+                  <div class="mt-1 text-xs text-red-11">{props.reloadError}</div>
+                </Show>
+              </div>
+
+              <div class="flex items-center gap-2 sm:shrink-0">
+                <button
+                  type="button"
+                  class="rounded-xl border border-amber-7 bg-amber-4 px-3 py-2 text-xs font-medium text-amber-12 transition-colors hover:bg-amber-5 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!props.canReloadWorkspace || props.reloadBusy}
+                  onClick={() =>
+                    void (props.reloadBannerBlocked
+                      ? props.forceStopActiveConversations()
+                      : props.reloadWorkspaceEngine())
+                  }
+                >
+                  {props.reloadBusy
+                    ? "Reloading..."
+                    : props.reloadBannerBlocked
+                      ? "Reload & Stop Tasks"
+                      : "Reload"}
+                </button>
+                <button
+                  type="button"
+                  class="rounded-xl border border-amber-6/70 bg-transparent px-3 py-2 text-xs font-medium text-amber-11 transition-colors hover:bg-amber-3"
+                  onClick={props.dismissReloadBanner}
+                >
+                  Later
+                </button>
+              </div>
+            </div>
+          </div>
+        </Show>
+
         <div class="flex-1 flex overflow-hidden">
           <div class="flex-1 min-w-0 relative overflow-hidden bg-gray-1">
             <div
@@ -3689,7 +3730,7 @@ export default function SessionView(props: SessionViewProps) {
                   Pick a starting point or just type below.
                 </p>
               </div>
-              <div class="grid gap-3 sm:grid-cols-2 max-w-2xl mx-auto text-left">
+              <div class="grid gap-3 max-w-lg mx-auto text-left">
                 <button
                   type="button"
                   class="rounded-2xl border border-dls-border bg-dls-hover p-4 transition-all hover:bg-dls-active hover:border-gray-7"
@@ -3700,20 +3741,6 @@ export default function SessionView(props: SessionViewProps) {
                   <div class="text-sm font-semibold text-dls-text">Automate your browser</div>
                   <div class="mt-1 text-xs text-dls-secondary leading-relaxed">
                     Set up browser actions and run reliable web tasks from OpenWork.
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  class="rounded-2xl border border-dls-border bg-dls-hover p-4 transition-all hover:bg-dls-active hover:border-gray-7"
-                  onClick={() => {
-                    void handleSoulQuickstart();
-                  }}
-                >
-                  <div class="text-sm font-semibold text-dls-text">Give me a soul</div>
-                  <div class="mt-1 text-xs text-dls-secondary leading-relaxed">
-                    Keep your goals and preferences across sessions with light scheduled check-ins.
-                    Tradeoff: more autonomy can create extra background runs, but revert is one command.
-                    Audit setup and heartbeat evidence from the Soul section.
                   </div>
                 </button>
               </div>
@@ -3876,6 +3903,7 @@ export default function SessionView(props: SessionViewProps) {
           developerMode={props.developerMode}
           busy={props.busy}
           isStreaming={showRunIndicator()}
+          compactTopSpacing={todoCount() > 0}
           onSend={handleSendPrompt}
           onStop={cancelRun}
           onDraftChange={handleDraftChange}
@@ -3917,9 +3945,9 @@ export default function SessionView(props: SessionViewProps) {
         <StatusBar
           clientConnected={props.clientConnected}
           openworkServerStatus={props.openworkServerStatus}
-          startupPreference={props.startupPreference}
           developerMode={props.developerMode}
-          onOpenSettings={() => openSettings("general")}
+          settingsOpen={false}
+          onOpenSettings={props.toggleSettings}
           onOpenMessaging={openConfig}
           onOpenProviders={openProviderAuth}
           onOpenMcp={openMcp}
@@ -3928,112 +3956,91 @@ export default function SessionView(props: SessionViewProps) {
         />
       </main>
 
-      <aside class="w-[280px] hidden xl:flex flex-col bg-dls-sidebar border-l border-gray-6/70 p-3">
-        <div class="flex-1 overflow-y-auto space-y-5 pt-2">
+      <aside
+        class="flex shrink-0 flex-col overflow-hidden bg-dls-sidebar border-l border-gray-6/70 p-3 transition-[width] duration-200"
+        style={{
+          width: `${rightSidebarWidth()}px`,
+          "min-width": `${rightSidebarWidth()}px`,
+        }}
+      >
+        <div class={`flex items-center pb-3 ${rightSidebarExpanded() ? "justify-end" : "justify-center"}`}>
+          <button
+            type="button"
+            class="flex h-9 w-9 items-center justify-center rounded-lg text-gray-10 transition-colors hover:bg-gray-3 hover:text-gray-12"
+            onClick={toggleRightSidebar}
+            title={rightSidebarExpanded() ? "Collapse sidebar" : "Expand sidebar"}
+            aria-label={rightSidebarExpanded() ? "Collapse sidebar" : "Expand sidebar"}
+          >
+            <Show when={rightSidebarExpanded()} fallback={<ChevronLeft size={18} />}>
+              <ChevronRight size={18} />
+            </Show>
+          </button>
+        </div>
+        <div class={`flex-1 overflow-y-auto ${rightSidebarExpanded() ? "space-y-5 pt-1" : "space-y-3 pt-1"}`}>
           <div class="space-y-1 mb-2">
-          <button
-            type="button"
-            class={`w-full h-9 flex items-center gap-2.5 px-3 rounded-lg text-[13px] font-medium transition-colors ${
-              showRightSidebarSelection() && props.tab === "scheduled"
-                ? "bg-gray-4 text-gray-12"
-                : "text-gray-11 hover:text-gray-12 hover:bg-gray-3"
-            }`}
-            onClick={() => {
-              props.setTab("scheduled");
-              props.setView("dashboard");
-            }}
-          >
-            <History size={18} />
-            Automations
-          </button>
-          <button
-            type="button"
-            class={`w-full h-9 flex items-center gap-2.5 px-3 rounded-lg text-[13px] font-medium transition-colors ${
-              showRightSidebarSelection() && props.tab === "soul"
-                ? "bg-gray-4 text-gray-12"
-                : "text-gray-11 hover:text-gray-12 hover:bg-gray-3"
-            }`}
-            onClick={() => openSoul()}
-          >
-            <HeartPulse size={18} class={soulNavIconClass()} />
-            Soul
-          </button>
-          <button
-            type="button"
-            class={`w-full h-9 flex items-center gap-2.5 px-3 rounded-lg text-[13px] font-medium transition-colors ${
-              showRightSidebarSelection() && props.tab === "skills"
-                ? "bg-gray-4 text-gray-12"
-                : "text-gray-11 hover:text-gray-12 hover:bg-gray-3"
-            }`}
-            onClick={() => {
-              props.setTab("skills");
-              props.setView("dashboard");
-            }}
-          >
-            <Zap size={18} />
-            Skills
-          </button>
-          <button
-            type="button"
-            class={`w-full h-9 flex items-center gap-2.5 px-3 rounded-lg text-[13px] font-medium transition-colors ${
-              showRightSidebarSelection() && (props.tab === "mcp" || props.tab === "plugins")
-                ? "bg-gray-4 text-gray-12"
-                : "text-gray-11 hover:text-gray-12 hover:bg-gray-3"
-            }`}
-            onClick={() => {
-              props.setTab("mcp");
-              props.setView("dashboard");
-            }}
-          >
-            <Box size={18} />
-            Extensions
-          </button>
-          <button
-            type="button"
-            class={`w-full h-9 flex items-center gap-2.5 px-3 rounded-lg text-[13px] font-medium transition-colors ${
-              showRightSidebarSelection() && props.tab === "identities"
-                ? "bg-gray-4 text-gray-12"
-                : "text-gray-11 hover:text-gray-12 hover:bg-gray-3"
-            }`}
-            onClick={() => {
-              props.setTab("identities");
-              props.setView("dashboard");
-            }}
-          >
-            <MessageCircle size={18} />
-            Messaging
-          </button>
-          <Show when={props.developerMode}>
-            <button
-              type="button"
-              class={`w-full h-9 flex items-center gap-2.5 px-3 rounded-lg text-[13px] font-medium transition-colors ${
-                showRightSidebarSelection() && props.tab === "config"
-                  ? "bg-gray-4 text-gray-12"
-                  : "text-gray-11 hover:text-gray-12 hover:bg-gray-3"
-              }`}
-              onClick={openConfig}
-            >
-              <SlidersHorizontal size={18} />
-              Advanced
-            </button>
-          </Show>
+            {rightSidebarNavButton(
+              "Automations",
+              <History size={18} />,
+              showRightSidebarSelection() && props.tab === "scheduled",
+              () => {
+                props.setTab("scheduled");
+                props.setView("dashboard");
+              },
+            )}
+            {rightSidebarNavButton(
+              "Skills",
+              <Zap size={18} />,
+              showRightSidebarSelection() && props.tab === "skills",
+              () => {
+                props.setTab("skills");
+                props.setView("dashboard");
+              },
+            )}
+            {rightSidebarNavButton(
+              "Extensions",
+              <Box size={18} />,
+              showRightSidebarSelection() && (props.tab === "mcp" || props.tab === "plugins"),
+              () => {
+                props.setTab("mcp");
+                props.setView("dashboard");
+              },
+            )}
+            {rightSidebarNavButton(
+              "Messaging",
+              <MessageCircle size={18} />,
+              showRightSidebarSelection() && props.tab === "identities",
+              () => {
+                props.setTab("identities");
+                props.setView("dashboard");
+              },
+            )}
+            <Show when={props.developerMode}>
+              {rightSidebarNavButton(
+                "Advanced",
+                <SlidersHorizontal size={18} />,
+                showRightSidebarSelection() && props.tab === "config",
+                openConfig,
+              )}
+            </Show>
           </div>
 
-          <InboxPanel
-            id="sidebar-inbox"
-            client={props.openworkServerClient}
-            workspaceId={props.openworkServerWorkspaceId}
-            onToast={(message) => setToastMessage(message)}
-          />
+          <Show when={rightSidebarExpanded()}>
+            <InboxPanel
+              id="sidebar-inbox"
+              client={props.openworkServerClient}
+              workspaceId={props.openworkServerWorkspaceId}
+              onToast={(message) => setToastMessage(message)}
+            />
 
-          <ArtifactsPanel
-            id="sidebar-artifacts"
-            files={touchedFiles()}
-            workspaceRoot={props.activeWorkspaceRoot}
-            onRevealArtifact={revealArtifact}
-            onOpenInObsidian={openArtifactInObsidian}
-            obsidianAvailable={obsidianAvailable()}
-          />
+            <ArtifactsPanel
+              id="sidebar-artifacts"
+              files={touchedFiles()}
+              workspaceRoot={props.activeWorkspaceRoot}
+              onRevealArtifact={revealArtifact}
+              onOpenInObsidian={openArtifactInObsidian}
+              obsidianAvailable={obsidianAvailable()}
+            />
+          </Show>
         </div>
       </aside>
 
@@ -4142,6 +4149,7 @@ export default function SessionView(props: SessionViewProps) {
         onSelect={handleProviderAuthSelect}
         onSubmitApiKey={handleProviderAuthApiKey}
         onSubmitOAuth={handleProviderAuthOAuth}
+        onRefreshProviders={props.refreshProviders}
         onClose={props.closeProviderAuthModal}
       />
 
@@ -4184,6 +4192,11 @@ export default function SessionView(props: SessionViewProps) {
         shareWorkspaceProfileError={shareWorkspaceProfileError()}
         shareWorkspaceProfileDisabledReason={shareServiceDisabledReason()}
         onShareSkillsSet={publishSkillsSetLink}
+        onOpenSingleSkillShare={() => {
+          setShareWorkspaceId(null);
+          props.setTab("skills");
+          props.setView("dashboard");
+        }}
         shareSkillsSetBusy={shareSkillsSetBusy()}
         shareSkillsSetUrl={shareSkillsSetUrl()}
         shareSkillsSetError={shareSkillsSetError()}
