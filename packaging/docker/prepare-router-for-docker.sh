@@ -9,7 +9,7 @@
 #
 # Usage (from repo root):
 #   ./packaging/docker/prepare-router-for-docker.sh
-# On Windows PowerShell use: .\packaging\docker\prepare-router-for-docker.ps1
+# On Windows PowerShell use: .\plackaging\docker\prepare-router-for-docker.ps1
 #
 # Then build the image:
 #   docker build -f packaging/docker/Dockerfile.with-router -t openwork-with-router packaging/docker
