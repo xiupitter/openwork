@@ -3,7 +3,6 @@ import { Check, ChevronDown, GripVertical, Loader2, Plus, RefreshCcw, Settings, 
 
 import type { TodoItem, WorkspaceConnectionState } from "../../types";
 import type { WorkspaceInfo } from "../../lib/tauri";
-import { t } from "../../../i18n";
 
 type SessionSummary = {
   id: string;
@@ -536,8 +535,8 @@ export default function SessionSidebar(props: SidebarProps) {
                                 onClick={() => toggleShowAllSessions(group.workspace.id)}
                               >
                                 {showingAll()
-                                  ? t("artifacts.show_fewer")
-                                  : t("artifacts.show_more").replace("{count}", String(sessions().length - MAX_SESSIONS_PREVIEW))}
+                                  ? "Show fewer"
+                                  : `Show ${sessions().length - MAX_SESSIONS_PREVIEW} more`}
                               </button>
                             </Show>
                           </Show>
@@ -558,7 +557,7 @@ export default function SessionSidebar(props: SidebarProps) {
                 onDrop={(event) => handleDrop(event, null)}
               >
                 <Plus size={14} />
-                {t("worker.add")}
+                Add new workspace
               </button>
               <Show when={addWorkspaceMenuOpen()}>
                 <div class="mt-2 rounded-lg border border-gray-6 bg-gray-1 shadow-lg overflow-hidden">
@@ -571,7 +570,7 @@ export default function SessionSidebar(props: SidebarProps) {
                     }}
                   >
                     <Plus size={12} />
-                    {t("worker.new")}
+                    New worker
                   </button>
                   <button
                     type="button"
@@ -582,7 +581,7 @@ export default function SessionSidebar(props: SidebarProps) {
                     }}
                   >
                     <Plus size={12} />
-                    {t("worker.connect_remote_short")}
+                    Connect remote
                   </button>
                   <button
                     type="button"
@@ -594,7 +593,7 @@ export default function SessionSidebar(props: SidebarProps) {
                     }}
                   >
                     <Plus size={12} />
-                    {t("worker.import_config")}
+                    Import config
                   </button>
                 </div>
               </Show>
@@ -609,7 +608,7 @@ export default function SessionSidebar(props: SidebarProps) {
                 class="w-full px-4 py-3 flex items-center justify-between text-sm text-gray-12 font-medium"
                 onClick={() => props.onToggleSection("progress")}
               >
-                <span>{t("session.progress")}</span>
+                <span>Progress</span>
                 <ChevronDown
                   size={16}
                   class={`transition-transform text-gray-10 ${

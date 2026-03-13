@@ -17,13 +17,14 @@ export const SUGGESTED_PLUGINS: SuggestedPlugin[] = [
   {
     name: "opencode-scheduler",
     packageName: "opencode-scheduler",
-    description: "使用 OpenCode 调度插件运行定时任务。",
+    description: "Run scheduled jobs with the OpenCode scheduler plugin.",
     tags: ["automation", "jobs"],
     installMode: "simple",
   },
 ];
 
 export type McpDirectoryInfo = {
+  id?: string;
   name: string;
   description: string;
   url?: string;
@@ -35,51 +36,45 @@ export type McpDirectoryInfo = {
 export const MCP_QUICK_CONNECT: McpDirectoryInfo[] = [
   {
     name: "Notion",
-    description: "同步页面、数据库和项目文档。",
+    description: "Pages, databases, and project docs in sync.",
     url: "https://mcp.notion.com/mcp",
     type: "remote",
     oauth: true,
   },
   {
     name: "Linear",
-    description: "规划迭代并更快完成工单。",
+    description: "Plan sprints and ship tickets faster.",
     url: "https://mcp.linear.app/mcp",
     type: "remote",
     oauth: true,
   },
   {
     name: "Sentry",
-    description: "跟踪发布并解决线上错误。",
+    description: "Track releases and resolve production errors.",
     url: "https://mcp.sentry.dev/mcp",
     type: "remote",
     oauth: true,
   },
   {
     name: "Stripe",
-    description: "查看支付、发票和订阅记录。",
+    description: "Inspect payments, invoices, and subscriptions.",
     url: "https://mcp.stripe.com",
     type: "remote",
     oauth: true,
   },
   {
-    name: "HubSpot",
-    description: "管理 CRM 记录、公司和销售流程状态。",
-    url: "https://mcp.hubspot.com/anthropic",
-    type: "remote",
-    oauth: true,
-  },
-  {
     name: "Context7",
-    description: "以更丰富的上下文搜索产品文档。",
+    description: "Search product docs with richer context.",
     url: "https://mcp.context7.com/mcp",
     type: "remote",
     oauth: false,
   },
   {
+    id: "chrome-devtools",
     name: "Control Chrome",
-    description: "通过浏览器自动化控制 Chrome 标签页。",
+    description: "Drive Chrome tabs with browser automation.",
     type: "local",
-    command: ["chrome-devtools-mcp"],
+    command: ["npx", "-y", "chrome-devtools-mcp@latest"],
     oauth: false,
   },
 ];

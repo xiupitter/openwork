@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal } from "solid-js";
+﻿import { For, Show, createMemo, createSignal } from "solid-js";
 
 import type { ScheduledJob } from "../types";
 import { usePlatform } from "../context/platform";
@@ -373,7 +373,7 @@ const AutomationJobCard = (props: {
             }`}
           >
             <Play size={12} />
-            Run
+            {t("scheduled.run")}
           </button>
           <button
             type="button"
@@ -386,7 +386,7 @@ const AutomationJobCard = (props: {
             }`}
           >
             <Trash2 size={12} />
-            Delete
+            {t("scheduled.delete")}
           </button>
         </div>
       </div>
@@ -463,24 +463,22 @@ export default function ScheduledTasksView(props: ScheduledTasksViewProps) {
   const automationDisabled = createMemo(() => props.newTaskDisabled || schedulerGateActive());
   const supportNote = createMemo(() => {
     if (props.source === "remote") {
-      return props.sourceReady ? null : t("app.error.openwork_server_unavailable");
+      return props.sourceReady ? null : "OpenWork server unavailable. Connect to sync scheduled tasks.";
     }
-    if (!isTauriRuntime()) return t("scheduled.support_desktop_only");
-    if (props.isWindows) return t("scheduled.support_windows_unsupported");
+    if (!isTauriRuntime()) return "Scheduled tasks require the desktop app.";
+    if (props.isWindows) return "Scheduler is not supported on Windows yet.";
     if (!props.schedulerInstalled || schedulerInstallRequested()) return null;
     return null;
   });
   const sourceDescription = createMemo(() =>
     props.source === "remote"
       ? t("scheduled.description_remote")
-      : t("scheduled.description_local"),
+      : t("scheduled.description_local")
   );
   const sourceLabel = createMemo(() =>
-    props.source === "remote" ? t("scheduled.source_label_remote") : t("scheduled.source_label_local"),
+    props.source === "remote" ? "From OpenWork server" : "From local scheduler"
   );
-  const schedulerLabel = createMemo(() =>
-    props.source === "remote" ? t("scheduled.scheduler_label_remote") : t("scheduled.scheduler_label_local"),
-  );
+  const schedulerLabel = createMemo(() => (props.source === "remote" ? "OpenWork server" : "Local"));
   const schedulerHint = createMemo(() =>
     props.source === "remote" ? "Remote instance" : "Launchd or systemd"
   );
@@ -705,13 +703,13 @@ export default function ScheduledTasksView(props: ScheduledTasksViewProps) {
               <div>
                 <div class="text-sm font-semibold text-gray-12">
                   {schedulerGateMode() === "reload"
-                    ? "Reload OpenWork to activate automations"
-                    : "Install the scheduler to unlock automations"}
+                    ? t("scheduled.gate_reload_title")
+                    : t("scheduled.gate_install_title")}
                 </div>
                 <div class="mt-1 text-xs text-gray-9">
                   {schedulerGateMode() === "reload"
-                    ? "OpenCode loads plugins at startup. Reload OpenWork to activate opencode-scheduler."
-                    : "Automations run through the opencode-scheduler plugin. Add it to this workspace to enable scheduling."}
+                    ? t("scheduled.gate_reload_desc")
+                    : t("scheduled.gate_install_desc")}
                 </div>
               </div>
             </div>
@@ -721,21 +719,21 @@ export default function ScheduledTasksView(props: ScheduledTasksViewProps) {
                 onClick={handleInstallScheduler}
                 disabled={!props.canEditPlugins || installingScheduler()}
               >
-                {installingScheduler() ? "Installing..." : "Install scheduler"}
+                {installingScheduler() ? t("scheduled.installing_scheduler") : t("scheduled.install_scheduler")}
               </Button>
               <Button
                 variant="outline"
                 onClick={() => void props.reloadWorkspaceEngine()}
                 disabled={!props.canReloadWorkspace || props.reloadBusy || !props.schedulerInstalled}
               >
-                {props.reloadBusy ? "Reloading..." : "Reload OpenWork"}
+                {props.reloadBusy ? t("scheduled.reloading") : t("scheduled.reload_openwork")}
               </Button>
               <button
                 type="button"
                 onClick={openSchedulerDocs}
                 class="text-xs font-medium text-gray-9 transition-colors hover:text-gray-12"
               >
-                View docs
+                {t("scheduled.view_docs")}
               </button>
             </div>
           </div>
@@ -811,7 +809,7 @@ export default function ScheduledTasksView(props: ScheduledTasksViewProps) {
             <div class="p-6 space-y-4">
               <div class="flex items-start justify-between gap-4">
                 <div>
-                  <h3 class="text-lg font-semibold text-gray-12">Delete automation?</h3>
+                  <h3 class="text-lg font-semibold text-gray-12">{t("scheduled.delete_title")}</h3>
                   <p class="text-sm text-gray-9 mt-1">{deleteDescription()}</p>
                 </div>
               </div>
@@ -820,10 +818,10 @@ export default function ScheduledTasksView(props: ScheduledTasksViewProps) {
               </div>
               <div class="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleteBusy()}>
-                  Cancel
+                  {t("scheduled.cancel")}
                 </Button>
                 <Button variant="danger" onClick={confirmDelete} disabled={deleteBusy()}>
-                  {deleteBusy() ? "Deleting" : "Delete"}
+                  {deleteBusy() ? t("scheduled.deleting") : t("scheduled.delete")}
                 </Button>
               </div>
             </div>
@@ -837,10 +835,10 @@ export default function ScheduledTasksView(props: ScheduledTasksViewProps) {
             <div class="p-8 space-y-6">
               <div class="flex items-start justify-between gap-4">
                 <div>
-                  <h2 class="text-xl font-semibold text-gray-12">Create automation</h2>
+                  <h2 class="text-xl font-semibold text-gray-12">{t("scheduled.create_automation")}</h2>
                   <p class="text-xs text-gray-9 mt-2">
-                    Automations are scheduled by running a prompt in a new thread. We’ll prefill
-                    a prompt for you to send.
+
+                    {t("scheduled.create_automation_desc")}
                   </p>
                 </div>
                 <button

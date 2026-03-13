@@ -3,7 +3,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import type { HubSkillCard, SkillCard } from "../types";
 
 import Button from "../components/button";
-import { Edit2, FolderOpen, Link2, Loader2, Package, Plus, RefreshCw, Search, Sparkles, Trash2, Upload } from "lucide-solid";
+import { Copy, Edit2, FolderOpen, Link2, Loader2, Package, Plus, RefreshCw, Search, Share2, Sparkles, Trash2, Upload } from "lucide-solid";
 import { currentLocale, t } from "../../i18n";
 import { DEFAULT_OPENWORK_PUBLISHER_BASE_URL, publishOpenworkBundleJson } from "../lib/publisher";
 
@@ -288,6 +288,17 @@ export default function SkillsView(props: SkillsViewProps) {
     }
   };
 
+  const copyShareLink = async () => {
+    const url = shareUrl()?.trim();
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setToast("Link copied");
+    } catch {
+      setShareError("Failed to copy link");
+    }
+  };
+
   const openInstallFromLink = () => {
     if (props.busy) return;
     setInstallLinkOpen(true);
@@ -461,7 +472,7 @@ export default function SkillsView(props: SkillsViewProps) {
       (!props.canInstallSkillCreator && !props.canUseDesktopTools)
   );
 
-  const workspaceLabel = createMemo(() => props.workspaceName.trim() || "Worker");
+  const workspaceLabel = createMemo(() => props.workspaceName.trim() || translate("worker.label"));
 
   const canCreateInChat = createMemo(
     () => !props.busy && (props.canInstallSkillCreator || props.canUseDesktopTools)
@@ -493,7 +504,9 @@ export default function SkillsView(props: SkillsViewProps) {
           <div class="min-w-0 space-y-1">
             <div class="text-[11px] font-semibold uppercase tracking-[0.18em] text-dls-secondary">{translate("skills.worker_profile")}</div>
             <div class="text-xl font-semibold text-dls-text truncate">{workspaceLabel()}</div>
-            <p class="text-sm text-dls-secondary">{translate("skills.worker_profile_desc")}</p>
+            <p class="text-sm text-dls-secondary">
+              {translate("skills.worker_profile_desc")}
+            </p>
           </div>
           <button
             type="button"
@@ -661,9 +674,9 @@ export default function SkillsView(props: SkillsViewProps) {
                         openShareLink(skill);
                       }}
                       disabled={props.busy}
-                      title="Share link"
+                      title="Share"
                     >
-                      <Link2 size={14} />
+                      <Share2 size={14} />
                     </button>
                     <button
                       type="button"
@@ -780,7 +793,7 @@ export default function SkillsView(props: SkillsViewProps) {
                       void installFromHub(skill);
                     }}
                     disabled={props.busy || installingHubSkill() === skill.name}
-                    title={translate("skills.install_skill_title").replace("{name}", skill.name)}
+                    title={`Install ${skill.name}`}
                   >
                     <Show
                       when={installingHubSkill() === skill.name}
@@ -798,7 +811,7 @@ export default function SkillsView(props: SkillsViewProps) {
       </div>
 
       <div class="space-y-4">
-        <h3 class="text-[11px] font-bold text-dls-secondary uppercase tracking-widest">Capability setup</h3>
+        <h3 class="text-[11px] font-bold text-dls-secondary uppercase tracking-widest">{translate("skills.capability_setup")}</h3>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <For each={recommendedSkills()}>
             {(item) => (
@@ -1008,17 +1021,18 @@ export default function SkillsView(props: SkillsViewProps) {
                   </div>
                 }
               >
-                <div class="rounded-xl bg-dls-hover border border-dls-border p-3 text-xs text-dls-secondary font-mono break-all">
-                  {shareUrl()}
-                </div>
-                <div class="flex justify-end gap-2">
+                <div class="flex items-start gap-2 rounded-xl bg-dls-hover border border-dls-border p-3">
+                  <div class="min-w-0 flex-1 text-xs text-dls-secondary font-mono break-all">{shareUrl()}</div>
                   <Button
                     variant="outline"
-                    onClick={() => void navigator.clipboard.writeText(shareUrl() ?? "")}
+                    onClick={() => void copyShareLink()}
                     disabled={!shareUrl()}
                   >
+                    <Copy size={14} />
                     Copy link
                   </Button>
+                </div>
+                <div class="flex justify-end gap-2">
                   <Button variant="secondary" onClick={closeShareLink}>
                     Done
                   </Button>
@@ -1034,12 +1048,12 @@ export default function SkillsView(props: SkillsViewProps) {
           <div class="bg-dls-surface border border-dls-border w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden">
             <div class="p-6 space-y-4">
               <div>
-                <h3 class="text-lg font-semibold text-dls-text">{translate("skills.install_from_link_modal_title")}</h3>
-                <p class="text-sm text-dls-secondary mt-1">{translate("skills.install_from_link_modal_desc")}</p>
+                <h3 class="text-lg font-semibold text-dls-text">Install from link</h3>
+                <p class="text-sm text-dls-secondary mt-1">Paste a skill bundle URL, preview it, then install.</p>
               </div>
 
               <div class="space-y-2">
-                <div class="text-xs font-semibold uppercase tracking-widest text-dls-secondary">{translate("skills.install_link_label")}</div>
+                <div class="text-xs font-semibold uppercase tracking-widest text-dls-secondary">Link</div>
                 <input
                   type="url"
                   value={installLinkUrl()}
@@ -1062,7 +1076,7 @@ export default function SkillsView(props: SkillsViewProps) {
                   const conflict = taken.has(bundle().name.trim());
                   return (
                     <div class="rounded-xl border border-dls-border bg-dls-hover p-4 space-y-2">
-                      <div class="text-xs font-semibold text-dls-text">{translate("skills.preview")}</div>
+                      <div class="text-xs font-semibold text-dls-text">Preview</div>
                       <div class="text-xs text-dls-secondary">
                         Skill: <span class="font-mono">{bundle().name}</span>
                       </div>
@@ -1070,7 +1084,7 @@ export default function SkillsView(props: SkillsViewProps) {
                         <div class="text-xs text-dls-secondary">{bundle().description}</div>
                       </Show>
                       <Show when={conflict}>
-                        <div class="text-xs text-amber-11">{translate("skills.skill_conflict")}</div>
+                        <div class="text-xs text-amber-11">A skill with this name is already installed.</div>
                       </Show>
                     </div>
                   );
@@ -1086,7 +1100,7 @@ export default function SkillsView(props: SkillsViewProps) {
                   onClick={() => void previewInstallLink()}
                   disabled={installLinkBusy() || !installLinkUrl().trim()}
                 >
-                  {installLinkBusy() && !installLinkBundle() ? translate("skills.loading") : translate("skills.preview")}
+                  {installLinkBusy() && !installLinkBundle() ? "Loading…" : "Preview"}
                 </Button>
                 <Show when={installLinkBundle()} keyed>
                   {(bundle) => {
@@ -1110,14 +1124,14 @@ export default function SkillsView(props: SkillsViewProps) {
                             onClick={() => void installFromPreview("keep-both")}
                             disabled={installLinkBusy()}
                           >
-                            {installLinkBusy() ? "Installing…" : "Keep both"}
+                            {installLinkBusy() ? translate("skills.installing") : translate("skills.keep_both")}
                           </Button>
                           <Button
                             variant="secondary"
                             onClick={() => void installFromPreview("overwrite")}
                             disabled={installLinkBusy()}
                           >
-                            {installLinkBusy() ? "Installing…" : "Overwrite"}
+                            {installLinkBusy() ? translate("skills.installing") : translate("skills.overwrite")}
                           </Button>
                         </div>
                       </Show>

@@ -5,6 +5,7 @@ import { ArrowUp, AtSign, Check, ChevronDown, File as FileIcon, Paperclip, Squar
 
 import type { ComposerAttachment, ComposerDraft, ComposerPart, PromptMode, SlashCommandOption } from "../../types";
 import { perfNow, recordPerfLog } from "../../lib/perf-log";
+import { t } from "../../../i18n";
 
 type MentionOption = {
   id: string;
@@ -25,6 +26,7 @@ type ComposerProps = {
   developerMode: boolean;
   busy: boolean;
   isStreaming: boolean;
+  compactTopSpacing?: boolean;
   onSend: (draft: ComposerDraft) => void;
   onStop: () => void;
   onDraftChange: (draft: ComposerDraft) => void;
@@ -509,7 +511,7 @@ export default function Composer(props: ComposerProps) {
   const [slashQuery, setSlashQuery] = createSignal("");
   const [slashIndex, setSlashIndex] = createSignal(0);
   const [slashCommands, setSlashCommands] = createSignal<SlashCommandOption[]>([]);
-  const [slashLoaded, setSlashLoaded] = createSignal(false);
+  const [slashLoading, setSlashLoading] = createSignal(false);
 
   onMount(() => {
     queueMicrotask(() => focusEditorEnd());
@@ -888,14 +890,16 @@ export default function Composer(props: ComposerProps) {
     setSlashIndex(0);
   });
 
-  // Fetch commands when slash popup opens for the first time
+  // Refresh commands each time the slash picker opens so hot-reloaded skills
+  // and commands become selectable without restarting the session view.
   createEffect(() => {
-    if (!slashOpen() || slashLoaded()) return;
+    if (!slashOpen()) return;
+    setSlashLoading(true);
     props
       .listCommands()
       .then((commands) => setSlashCommands(commands))
       .catch(() => setSlashCommands([]))
-      .finally(() => setSlashLoaded(true));
+      .finally(() => setSlashLoading(false));
   });
 
   // If the editor contains an exact /command (no spaces), auto-convert it into a styled chip.
@@ -1535,7 +1539,10 @@ export default function Composer(props: ComposerProps) {
   });
 
   return (
-    <div class="sticky bottom-0 z-20 bg-gradient-to-t from-gray-1 via-gray-1 to-transparent px-8 pt-12 pb-6" style={{ contain: "layout style" }}>
+    <div
+      class={`sticky bottom-0 z-20 bg-gradient-to-t from-gray-1 via-gray-1 to-transparent px-8 ${props.compactTopSpacing ? "pt-0" : "pt-12"} pb-6`}
+      style={{ contain: "layout style" }}
+    >
       <div class="max-w-[800px] mx-auto">
         <div
           class={`bg-gray-1 border border-gray-6/80 rounded-xl overflow-visible transition-all relative group/input ${mentionOpen() || slashOpen() ? "rounded-t-none border-t-transparent" : "shadow-[0_8px_30px_rgba(0,0,0,0.08)]"
@@ -1615,7 +1622,7 @@ export default function Composer(props: ComposerProps) {
                     when={slashFiltered().length}
                     fallback={
                       <div class="px-3 py-2 text-xs text-gray-10">
-                        {slashLoaded() ? "No commands found." : "Loading commands..."}
+                        {slashLoading() ? "Loading commands..." : "No commands found."}
                       </div>
                     }
                   >
@@ -1731,7 +1738,7 @@ export default function Composer(props: ComposerProps) {
                   <div class="relative">
                     <Show when={!hasDraftContent()}>
                       <div class="absolute left-0 top-0 text-gray-9 text-[15px] leading-relaxed pointer-events-none">
-                        Ask OpenWork...
+                        {t("session.placeholder")}
                       </div>
                     </Show>
                     <div

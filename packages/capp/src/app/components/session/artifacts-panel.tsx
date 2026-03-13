@@ -111,7 +111,7 @@ export default function ArtifactsPanel(props: ArtifactsPanelProps) {
       <div class="space-y-1">
         <Show
           when={visibleArtifacts().length > 0}
-          fallback={<div class="text-xs text-gray-10 px-2 py-1">{t("session.no_artifacts")}</div>}
+          fallback={<div class="text-xs text-gray-10 px-2 py-1">{t("session.no_artifacts_fallback")}</div>}
         >
           <For each={visibleArtifacts()}>
             {(artifact) => {
@@ -162,9 +162,9 @@ export default function ArtifactsPanel(props: ArtifactsPanelProps) {
                         type="button"
                         class="rounded-md border border-gray-6 bg-gray-2 px-1.5 py-0.5 text-[10px] font-medium text-gray-10 hover:text-gray-12 hover:border-gray-7 transition-colors"
                         onClick={() => props.onRevealArtifact?.(artifact.path)}
-                        title={img() ? t("artifacts.reveal_image") : t("artifacts.reveal_file")}
+                        title={img() ? "Reveal image in Finder" : "Reveal file in Finder"}
                       >
-                        {t("session.reveal")}
+                        Reveal
                       </button>
                     </Show>
                   </div>
@@ -180,7 +180,7 @@ export default function ArtifactsPanel(props: ArtifactsPanelProps) {
             class="w-full mt-1 rounded-lg px-2 py-1.5 text-xs text-gray-10 hover:text-gray-11 hover:bg-gray-3 transition-colors"
             onClick={() => setShowAll((prev) => !prev)}
           >
-            {showAll() ? t("artifacts.show_fewer") : t("artifacts.show_more").replace("{count}", String(hiddenCount()))}
+            {showAll() ? "Show fewer" : `Show ${hiddenCount()} more`}
           </button>
         </Show>
       </div>

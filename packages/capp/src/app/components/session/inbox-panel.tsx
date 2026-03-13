@@ -81,7 +81,7 @@ export default function InboxPanel(props: InboxPanelProps) {
     const client = props.client;
     const workspaceId = (props.workspaceId ?? "").trim();
     if (!client || !workspaceId) {
-      toast(t("inbox.connect_to_upload_files"));
+      toast("Connect to a worker to upload inbox files.");
       return;
     }
     if (!files.length) return;
@@ -94,7 +94,7 @@ export default function InboxPanel(props: InboxPanelProps) {
       for (const file of files) {
         await client.uploadInbox(workspaceId, file);
       }
-      toast(t("inbox.uploaded_to_worker"));
+      toast("Uploaded to worker inbox.");
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Inbox upload failed";
@@ -119,7 +119,7 @@ export default function InboxPanel(props: InboxPanelProps) {
     const client = props.client;
     const workspaceId = (props.workspaceId ?? "").trim();
     if (!client || !workspaceId) {
-      toast(t("inbox.connect_to_download"));
+      toast("Connect to a worker to download inbox files.");
       return;
     }
     const id = String(item.id ?? "").trim();
@@ -283,7 +283,7 @@ export default function InboxPanel(props: InboxPanelProps) {
         </Show>
 
         <Show when={hiddenCount() > 0}>
-          <div class="text-[11px] text-gray-10 px-1 py-1">{t("inbox.showing_first").replace("{count}", String(maxPreview()))}</div>
+          <div class="text-[11px] text-gray-10 px-1 py-1">Showing first {maxPreview()}.</div>
         </Show>
       </div>
     </div>
