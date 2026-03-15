@@ -30,17 +30,29 @@ function extensionFromMime(mimeType: string | undefined, kind: MediaKind): strin
   return ".bin";
 }
 
+/** Remove or replace only filesystem-dangerous chars; keep Unicode (e.g. Chinese) and extension. */
 function sanitizeFilename(filename: string, fallbackPrefix: string, fallbackExt: string): string {
   const trimmed = filename.trim();
   if (!trimmed) return `${fallbackPrefix}${fallbackExt}`;
 
-  const base = basename(trimmed)
-    .replace(/[^a-zA-Z0-9_.-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  const rawBase = basename(trimmed);
+  const ext = extname(rawBase);
+  const baseWithoutExt = rawBase.slice(0, rawBase.length - ext.length);
 
-  if (!base) return `${fallbackPrefix}${fallbackExt}`;
-  if (extname(base)) return base;
-  return `${base}${fallbackExt}`;
+  const safeExt = ext && /^.[a-zA-Z0-9]+$/.test(ext) ? ext : fallbackExt;
+  const maxBaseLen = 200;
+
+  const safeBase = baseWithoutExt
+    .replace(/[/\\:*?"<>|\x00-\x1f]/g, "-")
+    .replace(/\s+/g, "_")
+    .replace(/-+/g, "-")
+    .replace(/_+/g, "_")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, maxBaseLen)
+    .trim();
+
+  const base = safeBase || fallbackPrefix;
+  return `${base}${extname(base) ? "" : safeExt}`;
 }
 
 export class MediaStore {
