@@ -145,7 +145,11 @@ function resolveOpenCodeRouterProxyPolicy(
     if (normalized === "/opencode-router/bindings") {
       return { auth: "client", requiredScope: "collaborator" };
     }
-    if (normalized === "/opencode-router/identities/telegram" || normalized === "/opencode-router/identities/slack") {
+    if (
+      normalized === "/opencode-router/identities/telegram" ||
+      normalized === "/opencode-router/identities/slack" ||
+      normalized === "/opencode-router/identities/dingtalk"
+    ) {
       return { auth: "client", requiredScope: "collaborator" };
     }
   }
@@ -2237,6 +2241,254 @@ function createRoutes(config: ServerConfig, approvals: ApprovalService, tokens: 
       action: "opencodeRouter.slack.identity.delete",
       target: "opencodeRouter.slack",
       summary: `Deleted Slack identity (${identityId})`,
+      timestamp: Date.now(),
+    });
+
+    return jsonResponse(response);
+  });
+
+  addRoute(routes, "GET", "/workspace/:id/opencode-router/identities/dingtalk", "client", async (ctx) => {
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const workspaceIdentityId = normalizeOpenCodeRouterIdentityId(workspace.id);
+
+    const healthPortParam = parseInteger(ctx.url.searchParams.get("healthPort") ?? undefined);
+    const port = healthPortParam ?? resolveOpenCodeRouterHealthPort();
+    const requestHost = ctx.url.hostname;
+
+    const apply = await tryFetchOpenCodeRouterHealth("GET", "/identities/dingtalk", {
+      port,
+      requestHost,
+      timeoutMs: 2_000,
+    });
+
+    if (apply.applied && apply.body && typeof apply.body === "object") {
+      const payload = apply.body as Record<string, unknown>;
+      const rawItems = (payload as any).items;
+      if (Array.isArray(rawItems)) {
+        const items = rawItems
+          .filter(
+            (entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)),
+          )
+          .map((entry) => {
+            const id = normalizeOpenCodeRouterIdentityId(entry.id);
+            const enabled = entry.enabled === undefined ? true : entry.enabled === true || entry.enabled === "true";
+            const running = entry.running === true || entry.running === "true";
+            const access = normalizeTelegramAccessMode(
+              entry.access,
+              entry.pairingRequired === true || entry.pairingRequired === "true" ? "private" : "public",
+            );
+            return { id, enabled, running, access, pairingRequired: access === "private" };
+          })
+          .filter((item) => item.id === workspaceIdentityId);
+        return jsonResponse({ ...payload, items });
+      }
+      return jsonResponse(payload);
+    }
+
+    const current = await readOpenCodeRouterConfigFile(resolveOpenCodeRouterConfigPath());
+    const channels = ensurePlainObject(current.channels);
+    const dingtalk = ensurePlainObject(channels.dingtalk ?? {});
+    const robotsRaw = (dingtalk as any).robots;
+    const robots = Array.isArray(robotsRaw) ? (robotsRaw as unknown[]) : [];
+    const items = robots
+      .filter(
+        (entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)),
+      )
+      .map((entry) => {
+        const id = normalizeOpenCodeRouterIdentityId(entry.id);
+        const enabled = entry.enabled === undefined ? true : entry.enabled === true || entry.enabled === "true";
+        const access = normalizeTelegramAccessMode(entry.access, "public");
+        return { id, enabled, running: false, access, pairingRequired: access === "private" };
+      })
+      .filter((item) => item.id === workspaceIdentityId);
+    return jsonResponse({ ok: true, items });
+  });
+
+  addRoute(routes, "POST", "/workspace/:id/opencode-router/identities/dingtalk", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const body = await readJsonBody(ctx.request);
+    const clientId = typeof body.clientId === "string" ? body.clientId.trim() : "";
+    const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret.trim() : "";
+    const enabled = body.enabled === undefined ? true : body.enabled === true || body.enabled === "true";
+    const access = normalizeTelegramAccessMode(body.access, "public");
+    const pairingCodeInput = typeof body.pairingCode === "string" ? body.pairingCode : "";
+    const normalizedPairingCodeInput = normalizeTelegramPairingCode(pairingCodeInput);
+    if (
+      access === "private" &&
+      pairingCodeInput.trim() &&
+      (normalizedPairingCodeInput.length < 6 || normalizedPairingCodeInput.length > 24)
+    ) {
+      throw new ApiError(
+        400,
+        "invalid_pairing_code",
+        "Pairing code must be 6-24 letters or numbers",
+      );
+    }
+    const pairingCode =
+      access === "private"
+        ? (normalizedPairingCodeInput || normalizeTelegramPairingCode(generateTelegramPairingCode()))
+        : "";
+    const pairingCodeHash = access === "private" ? hashTelegramPairingCode(pairingCode) : "";
+    const workspaceIdentityId = normalizeOpenCodeRouterIdentityId(workspace.id);
+    const requestedId = typeof body.id === "string" ? normalizeOpenCodeRouterIdentityId(body.id) : "";
+    if (requestedId && requestedId !== workspaceIdentityId) {
+      throw new ApiError(
+        400,
+        "identity_mismatch",
+        `Identity id is scoped to this workspace (${workspace.id}).`,
+        { expected: workspaceIdentityId, received: requestedId },
+      );
+    }
+    const identityId = workspaceIdentityId;
+    if (identityId === "env") {
+      throw new ApiError(400, "invalid_identity", "Identity id 'env' is reserved");
+    }
+    const healthPort = normalizeHealthPort(body.healthPort);
+    const requestHost = ctx.url.hostname;
+    if (!clientId || !clientSecret) {
+      throw new ApiError(400, "client_required", "DingTalk clientId and clientSecret are required");
+    }
+
+    await requireApproval(ctx, {
+      workspaceId: workspace.id,
+      action: "opencodeRouter.dingtalk.identity.upsert",
+      summary: `Upsert DingTalk identity (${identityId})`,
+      paths: [resolveOpenCodeRouterConfigPath()],
+    });
+
+    await persistOpenCodeRouterDingTalkIdentity({
+      id: identityId,
+      clientId,
+      clientSecret,
+      enabled,
+      directory: workspace.path,
+      access,
+      ...(access === "private" ? { pairingCodeHash } : {}),
+    });
+
+    const port = healthPort ?? resolveOpenCodeRouterHealthPort();
+    const apply = await tryPostOpenCodeRouterHealth(
+      "/identities/dingtalk",
+      {
+        id: identityId,
+        clientId,
+        clientSecret,
+        enabled,
+        directory: workspace.path,
+        access,
+        ...(access === "private" ? { pairingCodeHash } : {}),
+      },
+      { port, requestHost, timeoutMs: 3_000 },
+    );
+
+    const response: Record<string, unknown> = {
+      ok: true,
+      persisted: true,
+      applied: apply.applied,
+      dingtalk: {
+        id: identityId,
+        enabled,
+        access,
+        pairingRequired: access === "private",
+        ...(access === "private" && pairingCode ? { pairingCode } : {}),
+      },
+    };
+
+    if (apply.body && typeof apply.body === "object") {
+      const record = apply.body as Record<string, unknown>;
+      if (record.dingtalk && typeof record.dingtalk === "object") {
+        response.dingtalk = { ...(response.dingtalk as object), ...record.dingtalk };
+      }
+    }
+
+    if (!apply.applied) {
+      response.applyError = apply.error ?? "OpenCodeRouter did not apply the update";
+      if (typeof apply.status === "number") response.applyStatus = apply.status;
+    }
+
+    await recordAudit(workspace.path, {
+      id: shortId(),
+      workspaceId: workspace.id,
+      actor: ctx.actor ?? { type: "remote" },
+      action: "opencodeRouter.dingtalk.identity.upsert",
+      target: "opencodeRouter.dingtalk",
+      summary: `Upserted DingTalk identity (${identityId})`,
+      timestamp: Date.now(),
+    });
+
+    return jsonResponse(response);
+  });
+
+  addRoute(routes, "DELETE", "/workspace/:id/opencode-router/identities/dingtalk/:identityId", "client", async (ctx) => {
+    ensureWritable(config);
+    requireClientScope(ctx, "collaborator");
+    const workspace = await resolveWorkspace(config, ctx.params.id);
+    const workspaceIdentityId = normalizeOpenCodeRouterIdentityId(workspace.id);
+    const requestedId = normalizeOpenCodeRouterIdentityId(ctx.params.identityId);
+    if (requestedId && requestedId !== workspaceIdentityId) {
+      throw new ApiError(
+        400,
+        "identity_mismatch",
+        `Identity id is scoped to this workspace (${workspace.id}).`,
+        { expected: workspaceIdentityId, received: requestedId },
+      );
+    }
+    const identityId = workspaceIdentityId;
+    if (identityId === "env") {
+      throw new ApiError(400, "invalid_identity", "Identity id 'env' is reserved");
+    }
+
+    await requireApproval(ctx, {
+      workspaceId: workspace.id,
+      action: "opencodeRouter.dingtalk.identity.delete",
+      summary: `Delete DingTalk identity (${identityId})`,
+      paths: [resolveOpenCodeRouterConfigPath()],
+    });
+
+    const deleted = await deleteOpenCodeRouterDingTalkIdentity(identityId);
+    const healthPortParam = parseInteger(ctx.url.searchParams.get("healthPort") ?? undefined);
+    const port = healthPortParam ?? resolveOpenCodeRouterHealthPort();
+    const requestHost = ctx.url.hostname;
+    const apply = await tryFetchOpenCodeRouterHealth(
+      "DELETE",
+      `/identities/dingtalk/${encodeURIComponent(identityId)}`,
+      {
+        port,
+        requestHost,
+        timeoutMs: 3_000,
+      },
+    );
+
+    const response: Record<string, unknown> = {
+      ok: true,
+      persisted: true,
+      deleted,
+      applied: apply.applied,
+      dingtalk: { id: identityId, deleted },
+    };
+
+    if (apply.body && typeof apply.body === "object") {
+      const record = apply.body as Record<string, unknown>;
+      if (record.dingtalk && typeof record.dingtalk === "object") {
+        response.dingtalk = record.dingtalk;
+      }
+    }
+
+    if (!apply.applied) {
+      response.applyError = apply.error ?? "OpenCodeRouter did not apply the update";
+      if (typeof apply.status === "number") response.applyStatus = apply.status;
+    }
+
+    await recordAudit(workspace.path, {
+      id: shortId(),
+      workspaceId: workspace.id,
+      actor: ctx.actor ?? { type: "remote" },
+      action: "opencodeRouter.dingtalk.identity.delete",
+      target: "opencodeRouter.dingtalk",
+      summary: `Deleted DingTalk identity (${identityId})`,
       timestamp: Date.now(),
     });
 
@@ -4442,6 +4694,134 @@ async function deleteOpenCodeRouterSlackIdentity(idRaw: string): Promise<boolean
     channels: {
       ...channels,
       slack: nextSlack,
+    },
+  };
+  await writeOpenCodeRouterConfigFile(configPath, next);
+  return deleted;
+}
+
+async function persistOpenCodeRouterDingTalkIdentity(identity: {
+  id: string;
+  clientId: string;
+  clientSecret: string;
+  enabled: boolean;
+  directory?: string;
+  access?: TelegramAccessMode;
+  pairingCodeHash?: string;
+}): Promise<void> {
+  const configPath = resolveOpenCodeRouterConfigPath();
+  const current = await readOpenCodeRouterConfigFile(configPath);
+  const channels = ensurePlainObject(current.channels);
+  const dingtalk = ensurePlainObject(channels.dingtalk ?? {});
+
+  const id = normalizeOpenCodeRouterIdentityId(identity.id);
+  const clientId = identity.clientId.trim();
+  const clientSecret = identity.clientSecret.trim();
+  const directory = typeof identity.directory === "string" ? identity.directory.trim() : "";
+  const requestedAccess = identity.access ? normalizeTelegramAccessMode(identity.access, "public") : undefined;
+  const requestedPairingCodeHash = normalizeTelegramPairingCodeHash(identity.pairingCodeHash);
+  if (!clientId || !clientSecret) {
+    throw new ApiError(400, "client_required", "DingTalk clientId and clientSecret are required");
+  }
+
+  const robotsRaw = (dingtalk as any).robots;
+  const robots = Array.isArray(robotsRaw) ? (robotsRaw as unknown[]) : [];
+  const nextRobots: Array<Record<string, unknown>> = [];
+  let found = false;
+  for (const entry of robots) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const entryId = normalizeOpenCodeRouterIdentityId(record.id);
+    if (entryId !== id) {
+      nextRobots.push(record);
+      continue;
+    }
+    found = true;
+    const prevDir = typeof record.directory === "string" ? record.directory.trim() : "";
+    const nextDir = directory || prevDir;
+    const existingAccess = normalizeTelegramAccessMode(record.access, "public");
+    const existingPairingCodeHash = normalizeTelegramPairingCodeHash(record.pairingCodeHash);
+    const access = requestedAccess ?? existingAccess;
+    const pairingCodeHash =
+      access === "private" ? (requestedPairingCodeHash || existingPairingCodeHash) : "";
+    if (access === "private" && !pairingCodeHash) {
+      throw new ApiError(400, "pairing_code_required", "DingTalk private access requires a pairing code hash");
+    }
+    nextRobots.push({
+      id,
+      clientId,
+      clientSecret,
+      enabled: identity.enabled,
+      ...(nextDir ? { directory: nextDir } : {}),
+      access,
+      ...(access === "private" ? { pairingCodeHash } : {}),
+    });
+  }
+  if (!found) {
+    const access = requestedAccess ?? "public";
+    const pairingCodeHash = access === "private" ? requestedPairingCodeHash : "";
+    if (access === "private" && !pairingCodeHash) {
+      throw new ApiError(400, "pairing_code_required", "DingTalk private access requires a pairing code hash");
+    }
+    nextRobots.push({
+      id,
+      clientId,
+      clientSecret,
+      enabled: identity.enabled,
+      ...(directory ? { directory } : {}),
+      access,
+      ...(access === "private" ? { pairingCodeHash } : {}),
+    });
+  }
+
+  const nextDingtalk: Record<string, unknown> = {
+    ...dingtalk,
+    enabled: true,
+    robots: nextRobots,
+  };
+
+  const next: OpenCodeRouterConfigFile = {
+    ...current,
+    channels: {
+      ...channels,
+      dingtalk: nextDingtalk,
+    },
+  };
+  await writeOpenCodeRouterConfigFile(configPath, next);
+}
+
+async function deleteOpenCodeRouterDingTalkIdentity(idRaw: string): Promise<boolean> {
+  const id = normalizeOpenCodeRouterIdentityId(idRaw);
+  const configPath = resolveOpenCodeRouterConfigPath();
+  const current = await readOpenCodeRouterConfigFile(configPath);
+  const channels = ensurePlainObject(current.channels);
+  const dingtalk = ensurePlainObject(channels.dingtalk ?? {});
+
+  const robotsRaw = (dingtalk as any).robots;
+  const robots = Array.isArray(robotsRaw) ? (robotsRaw as unknown[]) : [];
+  const nextRobots: Array<Record<string, unknown>> = [];
+  let deleted = false;
+  for (const entry of robots) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const entryId = normalizeOpenCodeRouterIdentityId(record.id);
+    if (entryId === id) {
+      deleted = true;
+      continue;
+    }
+    nextRobots.push(record);
+  }
+
+  const nextDingtalk: Record<string, unknown> = {
+    ...dingtalk,
+    robots: nextRobots,
+  };
+
+  const next: OpenCodeRouterConfigFile = {
+    ...current,
+    channels: {
+      ...channels,
+      dingtalk: nextRobots.length > 0 ? nextDingtalk : {},
     },
   };
   await writeOpenCodeRouterConfigFile(configPath, next);

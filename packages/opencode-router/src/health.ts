@@ -89,6 +89,28 @@ export type TelegramIdentityUpsertInput = {
   pairingCodeHash?: string;
 };
 
+export type DingTalkIdentityItem = {
+  id: string;
+  enabled: boolean;
+  running: boolean;
+  access?: "public" | "private";
+  pairingRequired?: boolean;
+};
+
+export type DingTalkIdentitiesResult = {
+  items: DingTalkIdentityItem[];
+};
+
+export type DingTalkIdentityUpsertInput = {
+  id?: string;
+  clientId: string;
+  clientSecret: string;
+  enabled?: boolean;
+  directory?: string;
+  access?: "public" | "private";
+  pairingCodeHash?: string;
+};
+
 export type SlackIdentityUpsertInput = {
   id?: string;
   botToken: string;
@@ -146,6 +168,9 @@ export type HealthHandlers = {
   listSlackIdentities?: () => Promise<SlackIdentitiesResult>;
   upsertSlackIdentity?: (input: SlackIdentityUpsertInput) => Promise<UpsertIdentityResult>;
   deleteSlackIdentity?: (id: string) => Promise<DeleteIdentityResult>;
+  listDingTalkIdentities?: () => Promise<DingTalkIdentitiesResult>;
+  upsertDingTalkIdentity?: (input: DingTalkIdentityUpsertInput) => Promise<UpsertIdentityResult>;
+  deleteDingTalkIdentity?: (id: string) => Promise<DeleteIdentityResult>;
   listBindings?: (filters?: { channel?: string; identityId?: string }) => Promise<BindingsListResult>;
   setBinding?: (input: { channel: string; identityId?: string; peerId: string; directory: string }) => Promise<void>;
   clearBinding?: (input: { channel: string; identityId?: string; peerId: string }) => Promise<void>;
@@ -454,6 +479,103 @@ export async function startHealthServer(
           const result = await handlers.deleteSlackIdentity(id);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, slack: result }));
+          return;
+        } catch (error) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: String(error) }));
+          return;
+        }
+      }
+
+      // GET /identities/dingtalk
+      if (pathname === "/identities/dingtalk" && req.method === "GET") {
+        if (!handlers.listDingTalkIdentities) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Not supported" }));
+          return;
+        }
+        try {
+          const result = await handlers.listDingTalkIdentities();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, ...result }));
+          return;
+        } catch (error) {
+          const statusRaw = (error as any)?.status;
+          const status = typeof statusRaw === "number" && statusRaw >= 400 && statusRaw < 600 ? statusRaw : 500;
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: String(error instanceof Error ? error.message : error) }));
+          return;
+        }
+      }
+
+      // POST /identities/dingtalk
+      if (pathname === "/identities/dingtalk" && req.method === "POST") {
+        if (!handlers.upsertDingTalkIdentity) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Not supported" }));
+          return;
+        }
+        let raw = "";
+        for await (const chunk of req) {
+          raw += chunk.toString();
+          if (raw.length > 1024 * 1024) {
+            res.writeHead(413, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "Payload too large" }));
+            return;
+          }
+        }
+        try {
+          const payload = JSON.parse(raw || "{}");
+          const clientId = typeof payload.clientId === "string" ? payload.clientId.trim() : "";
+          const clientSecret = typeof payload.clientSecret === "string" ? payload.clientSecret.trim() : "";
+          const id = typeof payload.id === "string" ? payload.id.trim() : undefined;
+          const directory = typeof payload.directory === "string" ? payload.directory.trim() : undefined;
+          const access = typeof payload.access === "string" ? payload.access.trim() : undefined;
+          const pairingCodeHash = typeof payload.pairingCodeHash === "string" ? payload.pairingCodeHash.trim() : undefined;
+          const enabled = payload.enabled === undefined ? undefined : payload.enabled === true || payload.enabled === "true";
+          if (!clientId || !clientSecret) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "clientId and clientSecret are required" }));
+            return;
+          }
+          const result = await handlers.upsertDingTalkIdentity({
+            id,
+            clientId,
+            clientSecret,
+            ...(enabled === undefined ? {} : { enabled }),
+            ...(directory ? { directory } : {}),
+            ...(access ? { access: access as "public" | "private" } : {}),
+            ...(pairingCodeHash ? { pairingCodeHash } : {}),
+          });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, dingtalk: result }));
+          return;
+        } catch (error) {
+          const statusRaw = (error as any)?.status;
+          const status = typeof statusRaw === "number" && statusRaw >= 400 && statusRaw < 600 ? statusRaw : 500;
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: String(error instanceof Error ? error.message : error) }));
+          return;
+        }
+      }
+
+      // DELETE /identities/dingtalk/:id
+      if (pathname.startsWith("/identities/dingtalk/") && req.method === "DELETE") {
+        if (!handlers.deleteDingTalkIdentity) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Not supported" }));
+          return;
+        }
+        const id = pathname.slice("/identities/dingtalk/".length).trim();
+        if (!id) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "id is required" }));
+          return;
+        }
+        try {
+          const result = await handlers.deleteDingTalkIdentity(id);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, dingtalk: result }));
           return;
         } catch (error) {
           res.writeHead(500, { "Content-Type": "application/json" });

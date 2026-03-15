@@ -63,7 +63,7 @@ Important for direct sends and bindings:
 - Telegram targets must use numeric `chat_id` values.
 - `@username` values are not valid direct `peerId` targets for router sends.
 - If a user has not started a chat with the bot yet, Telegram may return `chat not found`.
-- Private Telegram identities can require first-chat pairing with `/pair <code>` before commands are accepted.
+- Private Telegram or DingTalk identities can require first-chat pairing with `/pair <code>` before commands are accepted.
 
 ## Slack (Socket Mode)
 
@@ -169,6 +169,59 @@ opencode-router send --channel slack --identity default --to D123 --file ./repor
 - SQLite at `~/.openwork/opencode-router/opencode-router.db` unless overridden.
 - Config stored at `~/.openwork/opencode-router/opencode-router.json` (created by `opencode-router` or `pnpm -C packages/opencode-router setup`).
 - Group chats are disabled unless `GROUPS_ENABLED=true`.
+
+## Debugging (DingTalk / 本地调试)
+
+### 1. 环境与配置
+
+- 在 `packages/opencode-router` 下复制 `.env.example` 为 `.env`，至少配置：
+  - `OPENCODE_URL`、`OPENCODE_DIRECTORY`（必填）
+  - DingTalk：`DINGTALK_CLIENT_ID`、`DINGTALK_CLIENT_SECRET`（钉钉应用机器人 Stream 模式），或通过 CLI 添加：
+    ```bash
+    opencode-router dingtalk add <clientId> <clientSecret> --id default
+    ```
+- 可选：`LOG_LEVEL=debug` 便于看收发与文件相关日志。
+
+### 2. 启动方式
+
+**开发直接跑（改代码即生效）：**
+
+```bash
+cd packages/opencode-router
+pnpm dev
+```
+
+即执行 `bun src/cli.ts`，无需先 build。
+
+**或先编译再启动：**
+
+```bash
+cd packages/opencode-router
+pnpm build
+opencode-router start
+```
+
+### 3. VS Code 断点调试
+
+仓库已配置 `.vscode/launch.json`：
+
+- **Debug opencode-router (launch)**：用 Node 调试器 + Bun 运行 `start`，可设断点、查看变量。
+- **Debug opencode-router (Bun 扩展)**：若安装了 Bun 扩展，可直接用该配置启动。
+
+操作：在 VS Code 里打开 `packages/opencode-router/src/dingtalk.ts`，在以下位置设断点后按 F5 选上述任一配置启动：
+
+- 入站文件：`downloadDingTalkFile`、`parseRobotMessage` 里解析 `media` 处、回调里 `onMessage({ parts })` 前。
+- 出站文件：`uploadDingTalkMedia`、`sendMessageInternal` 里处理 `part.type === "image"` 的分支。
+
+### 4. 验证 DingTalk 文件能力
+
+- **入站（用户发文件给机器人）**：与机器人单聊（群聊 @ 不支持文件），发一张图或一个文件，看控制台/日志里是否有 “dingtalk stream event received” 及后续下载日志；若开了 OpenWork，会话里应出现附件摘要。
+- **出站（机器人发文件给用户）**：用健康检查接口发一张图（需先有 session，即用户先给机器人发过一条消息）：
+  ```bash
+  curl -sS "http://127.0.0.1:3005/send" -H 'Content-Type: application/json' \
+    -d '{"channel":"dingtalk","directory":"/path/to/bound/workdir","text":"附图","parts":[{"type":"image","filePath":"/absolute/path/to/image.png"}]}'
+  ```
+  或通过 OpenWork 的发送能力发到已绑定目录的 DingTalk 会话。
 
 ## Tests
 

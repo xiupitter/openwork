@@ -348,6 +348,7 @@ export type OpenworkOpenCodeRouterHealthSnapshot = {
     telegram: boolean;
     whatsapp: boolean;
     slack: boolean;
+    dingtalk: boolean;
   };
   config: {
     groupsEnabled: boolean;
@@ -415,6 +416,11 @@ export type OpenworkOpenCodeRouterSlackIdentitiesResult = {
   items: OpenworkOpenCodeRouterIdentityItem[];
 };
 
+export type OpenworkOpenCodeRouterDingTalkIdentitiesResult = {
+  ok: boolean;
+  items: OpenworkOpenCodeRouterIdentityItem[];
+};
+
 export type OpenworkOpenCodeRouterTelegramIdentityUpsertResult = {
   ok: boolean;
   persisted?: boolean;
@@ -470,6 +476,37 @@ export type OpenworkOpenCodeRouterSlackIdentityDeleteResult = {
   applyError?: string;
   applyStatus?: number;
   slack?: {
+    id: string;
+    deleted: boolean;
+  };
+};
+
+export type OpenworkOpenCodeRouterDingTalkIdentityUpsertResult = {
+  ok: boolean;
+  persisted?: boolean;
+  applied?: boolean;
+  applyError?: string;
+  applyStatus?: number;
+  dingtalk?: {
+    id: string;
+    enabled: boolean;
+    access?: "public" | "private";
+    pairingRequired?: boolean;
+    pairingCode?: string;
+    applied?: boolean;
+    starting?: boolean;
+    error?: string;
+  };
+};
+
+export type OpenworkOpenCodeRouterDingTalkIdentityDeleteResult = {
+  ok: boolean;
+  persisted?: boolean;
+  deleted?: boolean;
+  applied?: boolean;
+  applyError?: string;
+  applyStatus?: number;
+  dingtalk?: {
     id: string;
     deleted: boolean;
   };
@@ -1223,6 +1260,8 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
       requestJsonRaw<OpenworkOpenCodeRouterTelegramIdentitiesResult>(baseUrl, "/opencode-router/identities/telegram", { token, hostToken, timeoutMs: timeouts.opencodeRouter }),
     opencodeRouterSlackIdentities: () =>
       requestJsonRaw<OpenworkOpenCodeRouterSlackIdentitiesResult>(baseUrl, "/opencode-router/identities/slack", { token, hostToken, timeoutMs: timeouts.opencodeRouter }),
+    opencodeRouterDingTalkIdentities: () =>
+      requestJsonRaw<OpenworkOpenCodeRouterDingTalkIdentitiesResult>(baseUrl, "/opencode-router/identities/dingtalk", { token, hostToken, timeoutMs: timeouts.opencodeRouter }),
     listWorkspaces: () => requestJson<OpenworkWorkspaceList>(baseUrl, "/workspaces", { token, hostToken, timeoutMs: timeouts.listWorkspaces }),
     activateWorkspace: (workspaceId: string) =>
       requestJson<{ activeId: string; workspace: OpenworkWorkspaceInfo }>(
@@ -1376,6 +1415,52 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         { token, hostToken, method: "DELETE" },
       );
     },
+    getOpenCodeRouterDingTalkIdentities: (workspaceId: string, options?: { healthPort?: number | null }) => {
+      const query = typeof options?.healthPort === "number" ? `?healthPort=${encodeURIComponent(String(options.healthPort))}` : "";
+      return requestJson<OpenworkOpenCodeRouterDingTalkIdentitiesResult>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/opencode-router/identities/dingtalk${query}`,
+        { token, hostToken, timeoutMs: timeouts.opencodeRouter },
+      );
+    },
+    upsertOpenCodeRouterDingTalkIdentity: (
+      workspaceId: string,
+      input: {
+        id?: string;
+        clientId: string;
+        clientSecret: string;
+        enabled?: boolean;
+        access?: "public" | "private";
+        pairingCode?: string;
+      },
+      options?: { healthPort?: number | null },
+    ) =>
+      requestJson<OpenworkOpenCodeRouterDingTalkIdentityUpsertResult>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/opencode-router/identities/dingtalk`,
+        {
+          token,
+          hostToken,
+          method: "POST",
+          body: {
+            ...(input.id?.trim() ? { id: input.id.trim() } : {}),
+            clientId: input.clientId,
+            clientSecret: input.clientSecret,
+            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+            ...(input.access ? { access: input.access } : {}),
+            ...(input.pairingCode?.trim() ? { pairingCode: input.pairingCode.trim() } : {}),
+            healthPort: options?.healthPort ?? null,
+          },
+        },
+      ),
+    deleteOpenCodeRouterDingTalkIdentity: (workspaceId: string, identityId: string, options?: { healthPort?: number | null }) => {
+      const query = typeof options?.healthPort === "number" ? `?healthPort=${encodeURIComponent(String(options.healthPort))}` : "";
+      return requestJson<OpenworkOpenCodeRouterDingTalkIdentityDeleteResult>(
+        baseUrl,
+        `/workspace/${encodeURIComponent(workspaceId)}/opencode-router/identities/dingtalk/${encodeURIComponent(identityId)}${query}`,
+        { token, hostToken, method: "DELETE" },
+      );
+    },
     getOpenCodeRouterBindings: (
       workspaceId: string,
       filters?: { channel?: string; identityId?: string; healthPort?: number | null },
@@ -1415,7 +1500,7 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
     sendOpenCodeRouterMessage: (
       workspaceId: string,
       input: {
-        channel: "telegram" | "slack";
+        channel: "telegram" | "slack" | "dingtalk";
         text: string;
         identityId?: string;
         directory?: string;

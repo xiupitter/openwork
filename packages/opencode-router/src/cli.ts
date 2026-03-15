@@ -163,12 +163,16 @@ function upsertDingTalkBot(cfg: OpenCodeRouterConfigFile, identity: DingTalkIden
   const robots = Array.isArray(existing.robots) ? existing.robots.slice() : [];
   const id = normalizeIdentityId(identity.id);
   const filtered = robots.filter((b) => normalizeIdentityId(b.id) !== id);
+  const access = (identity.access ?? "public") === "private" ? "private" : "public";
+  const pairingCodeHash = typeof identity.pairingCodeHash === "string" ? identity.pairingCodeHash.trim() : "";
   filtered.push({
     id,
     enabled: identity.enabled !== false,
     clientId: identity.clientId,
     clientSecret: identity.clientSecret,
     ...(identity.directory ? { directory: identity.directory } : {}),
+    ...(identity.robotCode ? { robotCode: identity.robotCode } : {}),
+    ...(access === "private" ? { access: "private" as const, ...(pairingCodeHash ? { pairingCodeHash } : {}) } : {}),
   });
   next.channels.dingtalk = { ...existing, enabled: true, robots: filtered };
   return next;
@@ -486,24 +490,46 @@ dingtalk
   .argument("<clientId>", "Stream client id (AppKey)")
   .argument("<clientSecret>", "Stream client secret (AppSecret)")
   .option("--id <id>", "Identity id (default: default)")
+  .option("--robot-code <code>", "Robot code for downloading user media (required for picture/file; see 消息推送 in console)")
   .option("--disabled", "Add identity but disable it", false)
+  .option("--access <access>", "public or private (private requires /pair <code> before use)")
+  .option("--pairing-code-hash <hash>", "SHA-256 hex hash of pairing code (required when access=private)")
   .description("Add or update a DingTalk robot identity")
-  .action((clientId: string, clientSecret: string, opts: { id?: string; disabled?: boolean }) => {
-    const useJson = program.opts().json;
-    const config = loadConfig(process.env, { requireOpencode: false });
-    const id = normalizeIdentityId(opts.id);
-    const enabled = !opts.disabled;
-    updateConfig(config.configPath, (cfg) =>
-      upsertDingTalkBot(cfg, {
-        id,
-        clientId: clientId.trim(),
-        clientSecret: clientSecret.trim(),
-        enabled,
-      }),
-    );
-    if (useJson) outputJson({ success: true, id, enabled });
-    else console.log(`Saved DingTalk identity: ${id}`);
-  });
+  .action(
+    (
+      clientId: string,
+      clientSecret: string,
+      opts: { id?: string; disabled?: boolean; access?: string; pairingCodeHash?: string; robotCode?: string },
+    ) => {
+      const useJson = program.opts().json;
+      const config = loadConfig(process.env, { requireOpencode: false });
+      const id = normalizeIdentityId(opts.id);
+      const enabled = !opts.disabled;
+      const existing = config.dingtalkBots.find((b) => normalizeIdentityId(b.id) === id);
+      const requestedAccess = (opts.access ?? "").trim().toLowerCase() === "private" ? "private" : opts.access ? "public" : undefined;
+      const access = requestedAccess ?? (existing && (existing as any).access === "private" ? "private" : "public");
+      const requestedHash = typeof opts.pairingCodeHash === "string" ? opts.pairingCodeHash.trim() : "";
+      const pairingCodeHash = requestedHash || (access === "private" && existing ? ((existing as any).pairingCodeHash ?? "") : "");
+      if (access === "private" && !pairingCodeHash) {
+        if (useJson) outputJson({ success: false, error: "pairingCodeHash is required when access is private" });
+        else console.error("Error: --pairing-code-hash is required when --access=private");
+        process.exit(1);
+      }
+      const robotCode = typeof opts.robotCode === "string" ? opts.robotCode.trim() : undefined;
+      updateConfig(config.configPath, (cfg) =>
+        upsertDingTalkBot(cfg, {
+          id,
+          clientId: clientId.trim(),
+          clientSecret: clientSecret.trim(),
+          enabled,
+          ...(robotCode ? { robotCode } : {}),
+          ...(access === "private" ? { access: "private" as const, pairingCodeHash } : {}),
+        }),
+      );
+      if (useJson) outputJson({ success: true, id, enabled, access });
+      else console.log(`Saved DingTalk identity: ${id}`);
+    },
+  );
 
 dingtalk
   .command("remove")

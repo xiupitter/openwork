@@ -40,6 +40,12 @@ export type DingTalkIdentity = {
   clientSecret: string;
   enabled?: boolean;
   directory?: string;
+  /** 机器人唯一标识，下载用户发送的图片/文件时必填。开发者后台 -> 应用 -> 消息推送 可查看。 */
+  robotCode?: string;
+  /** Optional access mode. Private mode requires `/pair <code>` before first use. */
+  access?: "public" | "private";
+  /** sha256 hash (hex) of normalized pairing code for private mode. */
+  pairingCodeHash?: string;
 };
 
 export type OpenCodeRouterConfigFile = {
@@ -254,12 +260,17 @@ function coerceDingTalkBots(file: OpenCodeRouterConfigFile): DingTalkIdentity[] 
     if (!clientId || !clientSecret) continue;
     const id = normalizeId(typeof record.id === "string" ? record.id : "default");
     const directory = typeof record.directory === "string" ? record.directory.trim() : "";
+    const access = normalizeTelegramAccess(record.access);
+    const pairingCodeHash = normalizePairingCodeHash(record.pairingCodeHash);
+    const robotCode = typeof record.robotCode === "string" ? record.robotCode.trim() : undefined;
     normalized.push({
       id,
       clientId,
       clientSecret,
       enabled: record.enabled === undefined ? true : record.enabled === true,
       ...(directory ? { directory } : {}),
+      ...(robotCode ? { robotCode } : {}),
+      ...(access === "private" ? { access, ...(pairingCodeHash ? { pairingCodeHash } : {}) } : { access: "public" }),
     });
   }
   if (normalized.length) return normalized;
@@ -304,12 +315,14 @@ export function loadConfig(
   }
   const envDingTalkClientId = env.DINGTALK_CLIENT_ID?.trim() ?? "";
   const envDingTalkClientSecret = env.DINGTALK_CLIENT_SECRET?.trim() ?? "";
+  const envDingTalkRobotCode = env.DINGTALK_ROBOT_CODE?.trim() ?? "";
   if (envDingTalkClientId && envDingTalkClientSecret && !dingtalkBots.some((bot) => bot.clientId === envDingTalkClientId)) {
     dingtalkBots.unshift({
       id: "env",
       clientId: envDingTalkClientId,
       clientSecret: envDingTalkClientSecret,
       enabled: true,
+      ...(envDingTalkRobotCode ? { robotCode: envDingTalkRobotCode } : {}),
     });
   }
   const healthPort =

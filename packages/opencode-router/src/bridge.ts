@@ -161,6 +161,7 @@ const DEFAULT_MESSAGING_AGENT_INSTRUCTIONS = [
   "Do not ask end users for peer IDs or identity IDs.",
   "For Telegram send requests, try delivery immediately using existing bindings or direct tool calls.",
   "If Telegram returns 'chat not found', explain that the recipient must message the bot first (for example with /start), then ask the user to retry.",
+  "To send a generated file (e.g. Excel, image) to the user over Slack/Telegram/DingTalk: include a line starting with FILE: followed by the absolute path to the file (e.g. FILE:/path/to/file.xlsx). You can add caption lines before or after. The bridge will deliver the file and the text.",
   "Keep status updates concise and action-oriented.",
 ].join("\n");
 
@@ -374,6 +375,25 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     return { access: "private", pairingCodeHash };
   };
 
+  const resolveDingTalkIdentityAccess = (
+    identityId: string,
+  ): { access: "public" | "private"; pairingCodeHash: string } => {
+    const id = identityId.trim();
+    if (!id) {
+      return { access: "public", pairingCodeHash: "" };
+    }
+    const bot = config.dingtalkBots.find((entry) => entry.id === id);
+    if (!bot) {
+      return { access: "public", pairingCodeHash: "" };
+    }
+    const access = normalizeTelegramAccess((bot as any).access);
+    const pairingCodeHash = normalizePairingCodeHash((bot as any).pairingCodeHash);
+    if (access !== "private") {
+      return { access: "public", pairingCodeHash: "" };
+    }
+    return { access: "private", pairingCodeHash };
+  };
+
   const listIdentityConfigs = (channel: ChannelName): Array<{ id: string; directory: string }> => {
     if (channel === "telegram") {
       return config.telegramBots.map((bot) => ({ id: bot.id, directory: (bot.directory ?? "").trim() }));
@@ -450,7 +470,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     for (const bot of enabledDingTalk) {
       const key = adapterKey("dingtalk", bot.id);
       logger.debug({ identityId: bot.id }, "dingtalk adapter enabled");
-      const base = createDingTalkAdapter(bot, config, logger, handleInbound);
+      const base = createDingTalkAdapter(bot, config, logger, handleInbound, mediaStore);
       adapters.set(key, { ...base, key });
     }
   }
@@ -1258,6 +1278,277 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
           return { id, deleted };
         },
 
+        listDingTalkIdentities: async () => {
+          return {
+            items: config.dingtalkBots.map((bot) => ({
+              id: bot.id,
+              enabled: bot.enabled !== false,
+              running: adapters.has(adapterKey("dingtalk", bot.id)),
+              access: normalizeTelegramAccess((bot as any).access),
+              pairingRequired: normalizeTelegramAccess((bot as any).access) === "private",
+            })),
+          };
+        },
+        upsertDingTalkIdentity: async (input: {
+          id?: string;
+          clientId: string;
+          clientSecret: string;
+          enabled?: boolean;
+          directory?: string;
+          access?: "public" | "private";
+          pairingCodeHash?: string;
+        }) => {
+          const clientId = input.clientId?.trim() ?? "";
+          const clientSecret = input.clientSecret?.trim() ?? "";
+          if (!clientId || !clientSecret) throw new Error("clientId and clientSecret are required");
+          const id = normalizeIdentityId(input.id);
+          if (id === "env") throw new Error("identity id 'env' is reserved");
+          const enabled = input.enabled !== false;
+          const directoryInput = typeof input.directory === "string" ? input.directory.trim() : "";
+          const requestedAccess =
+            typeof input.access === "string" && input.access.trim() ? normalizeTelegramAccess(input.access) : undefined;
+          const requestedPairingCodeHash = normalizePairingCodeHash(input.pairingCodeHash);
+
+          const { config: current } = readConfigFile(config.configPath);
+          const dingtalk = current.channels?.dingtalk;
+          const robots = Array.isArray((dingtalk as any)?.robots) ? (((dingtalk as any).robots as unknown[]) ?? []) : [];
+          const nextRobots: any[] = [];
+          let found = false;
+          for (const entry of robots) {
+            if (!entry || typeof entry !== "object") continue;
+            const record = entry as Record<string, unknown>;
+            const entryId = normalizeIdentityId(typeof record.id === "string" ? record.id : "default");
+            if (entryId !== id) {
+              nextRobots.push(entry);
+              continue;
+            }
+            found = true;
+            const existingDirectory = typeof record.directory === "string" ? record.directory.trim() : "";
+            const directory = directoryInput || existingDirectory;
+            const existingAccess = normalizeTelegramAccess(record.access);
+            const existingPairingCodeHash = normalizePairingCodeHash(record.pairingCodeHash);
+            const access = requestedAccess ?? existingAccess;
+            const pairingCodeHash = access === "private" ? requestedPairingCodeHash || existingPairingCodeHash : "";
+            if (access === "private" && !pairingCodeHash) {
+              throw new Error("pairingCodeHash is required when DingTalk access is private");
+            }
+            nextRobots.push({
+              id,
+              clientId,
+              clientSecret,
+              enabled,
+              ...(directory ? { directory } : {}),
+              access,
+              ...(access === "private" ? { pairingCodeHash } : {}),
+            });
+          }
+          if (!found) {
+            const access = requestedAccess ?? "public";
+            const pairingCodeHash = access === "private" ? requestedPairingCodeHash : "";
+            if (access === "private" && !pairingCodeHash) {
+              throw new Error("pairingCodeHash is required when DingTalk access is private");
+            }
+            nextRobots.push({
+              id,
+              clientId,
+              clientSecret,
+              enabled,
+              ...(directoryInput ? { directory: directoryInput } : {}),
+              access,
+              ...(access === "private" ? { pairingCodeHash } : {}),
+            });
+          }
+
+          const next: OpenCodeRouterConfigFile = {
+            ...current,
+            channels: {
+              ...current.channels,
+              dingtalk: {
+                ...(current.channels?.dingtalk ?? {}),
+                enabled: true,
+                robots: nextRobots,
+              },
+            },
+          };
+          next.version = next.version ?? 1;
+          writeConfigFile(config.configPath, next);
+          config.configFile = next;
+
+          const existingIdx = config.dingtalkBots.findIndex((bot) => bot.id === id);
+          let runtimeAccess: "public" | "private" = requestedAccess ?? "public";
+          let runtimePairingCodeHash = requestedPairingCodeHash;
+          if (existingIdx >= 0) {
+            const prev = config.dingtalkBots[existingIdx];
+            const nextDirectory = directoryInput || (prev as any)?.directory || undefined;
+            const prevAccess = normalizeTelegramAccess((prev as any)?.access);
+            const prevPairingCodeHash = normalizePairingCodeHash((prev as any)?.pairingCodeHash);
+            runtimeAccess = requestedAccess ?? prevAccess;
+            runtimePairingCodeHash = runtimeAccess === "private" ? requestedPairingCodeHash || prevPairingCodeHash : "";
+            if (runtimeAccess === "private" && !runtimePairingCodeHash) {
+              throw new Error("pairingCodeHash is required when DingTalk access is private");
+            }
+            config.dingtalkBots[existingIdx] = {
+              id,
+              clientId,
+              clientSecret,
+              enabled,
+              ...(nextDirectory ? { directory: String(nextDirectory).trim() } : {}),
+              access: runtimeAccess,
+              ...(runtimeAccess === "private" ? { pairingCodeHash: runtimePairingCodeHash } : {}),
+            } as any;
+          } else {
+            runtimeAccess = requestedAccess ?? "public";
+            runtimePairingCodeHash = runtimeAccess === "private" ? requestedPairingCodeHash : "";
+            if (runtimeAccess === "private" && !runtimePairingCodeHash) {
+              throw new Error("pairingCodeHash is required when DingTalk access is private");
+            }
+            config.dingtalkBots.push({
+              id,
+              clientId,
+              clientSecret,
+              enabled,
+              ...(directoryInput ? { directory: directoryInput } : {}),
+              access: runtimeAccess,
+              ...(runtimeAccess === "private" ? { pairingCodeHash: runtimePairingCodeHash } : {}),
+            } as any);
+          }
+
+          const key = adapterKey("dingtalk", id);
+          const existing = adapters.get(key);
+          if (!enabled) {
+            if (existing) {
+              try {
+                await existing.stop();
+              } catch (error) {
+                logger.warn({ error, channel: "dingtalk", identityId: id }, "failed to stop dingtalk adapter");
+              }
+              adapters.delete(key);
+            }
+            return {
+              id,
+              enabled: false,
+              access: runtimeAccess,
+              pairingRequired: runtimeAccess === "private",
+              applied: true,
+            };
+          }
+
+          if (existing) {
+            try {
+              await existing.stop();
+            } catch (error) {
+              logger.warn({ error, channel: "dingtalk", identityId: id }, "failed to stop existing dingtalk adapter");
+            }
+            adapters.delete(key);
+          }
+          const base = createDingTalkAdapter(
+            {
+              id,
+              clientId,
+              clientSecret,
+              enabled,
+              ...(directoryInput ? { directory: directoryInput } : {}),
+              access: runtimeAccess,
+              ...(runtimeAccess === "private" && runtimePairingCodeHash
+                ? { pairingCodeHash: runtimePairingCodeHash }
+                : {}),
+            } as any,
+            config,
+            logger,
+            handleInbound,
+            mediaStore,
+          );
+          const adapter = { ...base, key };
+          adapters.set(key, adapter);
+
+          const startResult = await startAdapterBounded(adapter, {
+            timeoutMs: 2_500,
+            onError: (error) => {
+              logger.error({ error, channel: "dingtalk", identityId: id }, "dingtalk adapter start failed");
+              adapters.delete(key);
+            },
+          });
+
+          if (startResult.status === "timeout") {
+            return {
+              id,
+              enabled: true,
+              access: runtimeAccess,
+              pairingRequired: runtimeAccess === "private",
+              applied: false,
+              starting: true,
+            };
+          }
+          if (startResult.status === "error") {
+            return {
+              id,
+              enabled: true,
+              access: runtimeAccess,
+              pairingRequired: runtimeAccess === "private",
+              applied: false,
+              error: String(startResult.error),
+            };
+          }
+          return {
+            id,
+            enabled: true,
+            access: runtimeAccess,
+            pairingRequired: runtimeAccess === "private",
+            applied: true,
+          };
+        },
+        deleteDingTalkIdentity: async (rawId: string) => {
+          const id = normalizeIdentityId(rawId);
+          if (id === "env") throw new Error("env identity cannot be deleted");
+
+          const { config: current } = readConfigFile(config.configPath);
+          const dingtalk = current.channels?.dingtalk;
+          const robots = Array.isArray((dingtalk as any)?.robots) ? (((dingtalk as any).robots as unknown[]) ?? []) : [];
+          const nextRobots: any[] = [];
+          let deleted = false;
+          for (const entry of robots) {
+            if (!entry || typeof entry !== "object") continue;
+            const record = entry as Record<string, unknown>;
+            const entryId = normalizeIdentityId(typeof record.id === "string" ? record.id : "default");
+            if (entryId === id) {
+              deleted = true;
+              continue;
+            }
+            nextRobots.push(entry);
+          }
+          const next: OpenCodeRouterConfigFile = {
+            ...current,
+            channels: {
+              ...current.channels,
+              dingtalk: {
+                ...(current.channels?.dingtalk ?? {}),
+                robots: nextRobots,
+              },
+            },
+          };
+          next.version = next.version ?? 1;
+          writeConfigFile(config.configPath, next);
+          config.configFile = next;
+
+          config.dingtalkBots.splice(
+            0,
+            config.dingtalkBots.length,
+            ...config.dingtalkBots.filter((bot) => bot.id !== id),
+          );
+
+          const key = adapterKey("dingtalk", id);
+          const existing = adapters.get(key);
+          if (existing) {
+            try {
+              await existing.stop();
+            } catch (error) {
+              logger.warn({ error, channel: "dingtalk", identityId: id }, "failed to stop dingtalk adapter");
+            }
+            adapters.delete(key);
+          }
+          return { id, deleted };
+        },
+
         listBindings: async (filters?: { channel?: string; identityId?: string }) => {
           const channelRaw = filters?.channel?.trim().toLowerCase();
           const identityIdRaw = filters?.identityId?.trim();
@@ -1674,6 +1965,30 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
   ensureEventSubscription(defaultDirectory);
 
+  /** Parse reply string into parts: lines starting with FILE: become file parts, rest become text (for agent-generated file + caption). */
+  function parseReplyIntoParts(reply: string): OutboundMessagePart[] {
+    const lines = reply.split(/\r?\n/);
+    const parts: OutboundMessagePart[] = [];
+    let textBuffer: string[] = [];
+    const flushText = () => {
+      const t = textBuffer.join("\n").trim();
+      if (t) parts.push({ type: "text", text: t });
+      textBuffer = [];
+    };
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("FILE:")) {
+        flushText();
+        const filePath = trimmed.slice(5).trim();
+        if (filePath) parts.push({ type: "file", filePath });
+      } else {
+        textBuffer.push(line);
+      }
+    }
+    flushText();
+    return parts.length ? parts : [{ type: "text", text: reply }];
+  }
+
   async function sendText(
     channel: ChannelName,
     identityId: string,
@@ -1778,6 +2093,92 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     return "handled";
   }
 
+  async function handleDingTalkPairingGate(input: {
+    identityId: string;
+    peerKey: string;
+    peerId: string;
+    text: string;
+    bindingDirectory?: string;
+    sessionDirectory?: string;
+  }): Promise<"continue" | "handled"> {
+    const access = resolveDingTalkIdentityAccess(input.identityId);
+    if (access.access !== "private") {
+      return "continue";
+    }
+
+    const hasKnownBinding = Boolean(input.bindingDirectory?.trim() || input.sessionDirectory?.trim());
+    if (hasKnownBinding) {
+      return "continue";
+    }
+
+    const pairingCode = extractPairingCodeFromCommand(input.text);
+    if (!pairingCode) {
+      await sendText(
+        "dingtalk",
+        input.identityId,
+        input.peerId,
+        "This DingTalk bot is private. Ask your OpenWork host for the pairing code, then send /pair <code>.",
+        { kind: "system" },
+      );
+      return "handled";
+    }
+
+    if (!access.pairingCodeHash) {
+      await sendText(
+        "dingtalk",
+        input.identityId,
+        input.peerId,
+        "This DingTalk bot is private but missing a pairing code. Ask your OpenWork host to reconnect it.",
+        { kind: "system" },
+      );
+      return "handled";
+    }
+
+    if (hashPairingCode(pairingCode) !== access.pairingCodeHash) {
+      await sendText("dingtalk", input.identityId, input.peerId, "Invalid pairing code. Try again with /pair <code>.", {
+        kind: "system",
+      });
+      return "handled";
+    }
+
+    const identityDirectory = resolveIdentityDirectory("dingtalk", input.identityId);
+    const boundDirectoryCandidate = identityDirectory || defaultDirectory;
+    const hasExplicitBinding = Boolean(identityDirectory);
+    if (!boundDirectoryCandidate || (!hasExplicitBinding && isDangerousRootDirectory(boundDirectoryCandidate))) {
+      await sendText(
+        "dingtalk",
+        input.identityId,
+        input.peerId,
+        "No workspace directory configured for this identity. Ask your OpenWork host to set it, or reply with /dir <path>.",
+        { kind: "system" },
+      );
+      return "handled";
+    }
+
+    const scopedBound = resolveScopedDirectory(boundDirectoryCandidate);
+    if (!scopedBound.ok) {
+      await sendText("dingtalk", input.identityId, input.peerId, scopedBound.error, { kind: "system" });
+      return "handled";
+    }
+
+    const boundDirectory = scopedBound.directory;
+    store.upsertBinding("dingtalk", input.identityId, input.peerKey, boundDirectory);
+    store.deleteSession("dingtalk", input.identityId, input.peerKey);
+    ensureEventSubscription(boundDirectory);
+    logger.info(
+      { channel: "dingtalk", identityId: input.identityId, peerId: input.peerKey, directory: boundDirectory },
+      "dingtalk private identity paired",
+    );
+    await sendText(
+      "dingtalk",
+      input.identityId,
+      input.peerId,
+      "Pairing successful. This chat is now linked to your worker.",
+      { kind: "system" },
+    );
+    return "handled";
+  }
+
   async function handleInbound(message: InboundMessage) {
     const adapter = adapters.get(adapterKey(message.channel, message.identityId));
     if (!adapter) return;
@@ -1842,6 +2243,19 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
       binding = store.getBinding(inbound.channel, inbound.identityId, peerKey);
       session = store.getSession(inbound.channel, inbound.identityId, peerKey);
     }
+    if (inbound.channel === "dingtalk") {
+      const pairingGate = await handleDingTalkPairingGate({
+        identityId: inbound.identityId,
+        peerKey,
+        peerId: inbound.peerId,
+        text: trimmedText,
+        ...(binding?.directory?.trim() ? { bindingDirectory: binding.directory } : {}),
+        ...(session?.directory?.trim() ? { sessionDirectory: session.directory ?? undefined } : {}),
+      });
+      if (pairingGate === "handled") return;
+      binding = store.getBinding(inbound.channel, inbound.identityId, peerKey);
+      session = store.getSession(inbound.channel, inbound.identityId, peerKey);
+    }
 
     // Handle bot commands
     if (trimmedText.startsWith("/")) {
@@ -1888,7 +2302,8 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     const boundDirectory = scopedBound.directory;
 
     const shouldAutoBind = !(
-      inbound.channel === "telegram" && resolveTelegramIdentityAccess(inbound.identityId).access === "private"
+      (inbound.channel === "telegram" && resolveTelegramIdentityAccess(inbound.identityId).access === "private") ||
+      (inbound.channel === "dingtalk" && resolveDingTalkIdentityAccess(inbound.identityId).access === "private")
     );
     if (shouldAutoBind && !binding?.directory?.trim()) {
       store.upsertBinding(inbound.channel, inbound.identityId, peerKey, boundDirectory);
@@ -2011,7 +2426,36 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
         if (reply) {
           logger.debug({ sessionID, replyLength: reply.length }, "reply built");
-          await sendText(inbound.channel, inbound.identityId, inbound.peerId, reply, { kind: "reply" });
+          const parsedParts = parseReplyIntoParts(reply);
+          const hasFilePart = parsedParts.some((p) => p.type !== "text");
+          if (hasFilePart) {
+            try {
+              const resolvedParts = await resolveOutboundParts(boundDirectory, { parts: parsedParts });
+              const delivery = await deliverParts(
+                inbound.channel,
+                inbound.identityId,
+                inbound.peerId,
+                resolvedParts,
+                { kind: "reply" },
+              );
+              if (delivery.sentParts < delivery.attemptedParts) {
+                const err = delivery.partResults.find((p) => !p.sent)?.error;
+                logger.warn({ sessionID, partResults: delivery.partResults }, "reply delivery partial failure");
+                await sendText(
+                  inbound.channel,
+                  inbound.identityId,
+                  inbound.peerId,
+                  `部分内容发送失败${err ? `: ${err}` : ""}`,
+                  { kind: "system" },
+                );
+              }
+            } catch (err) {
+              logger.warn({ err, sessionID }, "reply with file parts failed");
+              await sendText(inbound.channel, inbound.identityId, inbound.peerId, reply, { kind: "reply" });
+            }
+          } else {
+            await sendText(inbound.channel, inbound.identityId, inbound.peerId, reply, { kind: "reply" });
+          }
         } else {
           logger.warn(
             { sessionID, partTypes: parts.map((part) => part.type), ignoredCount: parts.filter((part) => part.ignored).length },
@@ -2124,23 +2568,35 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
     }
 
     if (command === "pair") {
-      if (channel !== "telegram") {
-        await sendText(channel, identityId, peerId, "Pairing is only available for Telegram private bots.", {
+      if (channel !== "telegram" && channel !== "dingtalk") {
+        await sendText(channel, identityId, peerId, "Pairing is only available for Telegram or DingTalk private bots.", {
           kind: "system",
         });
         return true;
       }
       const binding = store.getBinding(channel, identityId, peerKey);
       const session = store.getSession(channel, identityId, peerKey);
-      const pairingGate = await handleTelegramPairingGate({
-        identityId,
-        peerKey,
-        peerId,
-        text,
-        ...(binding?.directory?.trim() ? { bindingDirectory: binding.directory } : {}),
-        ...(session?.directory?.trim() ? { sessionDirectory: session.directory ?? undefined } : {}),
-      });
-      if (pairingGate === "handled") return true;
+      if (channel === "telegram") {
+        const pairingGate = await handleTelegramPairingGate({
+          identityId,
+          peerKey,
+          peerId,
+          text,
+          ...(binding?.directory?.trim() ? { bindingDirectory: binding.directory } : {}),
+          ...(session?.directory?.trim() ? { sessionDirectory: session.directory ?? undefined } : {}),
+        });
+        if (pairingGate === "handled") return true;
+      } else {
+        const pairingGate = await handleDingTalkPairingGate({
+          identityId,
+          peerKey,
+          peerId,
+          text,
+          ...(binding?.directory?.trim() ? { bindingDirectory: binding.directory } : {}),
+          ...(session?.directory?.trim() ? { sessionDirectory: session.directory ?? undefined } : {}),
+        });
+        if (pairingGate === "handled") return true;
+      }
       await sendText(channel, identityId, peerId, "This chat is already paired.", { kind: "system" });
       return true;
     }
@@ -2186,7 +2642,7 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
 
     // /help command
     if (command === "help") {
-      const helpText = `/opus - Claude Opus 4.5\n/codex - GPT 5.2 Codex\n/pair <code> - pair this chat with a private Telegram bot\n/dir <path> - bind this chat to a workspace directory\n/dir - show current directory\n/agent - show workspace agent scope/path\n/model - show current\n/reset - start fresh\n/help - this`;
+      const helpText = `/opus - Claude Opus 4.5\n/codex - GPT 5.2 Codex\n/pair <code> - pair this chat with a private bot (Telegram or DingTalk)\n/dir <path> - bind this chat to a workspace directory\n/dir - show current directory\n/agent - show workspace agent scope/path\n/model - show current\n/reset - start fresh\n/help - this`;
       await sendText(channel, identityId, peerId, helpText, { kind: "system" });
       return true;
     }
