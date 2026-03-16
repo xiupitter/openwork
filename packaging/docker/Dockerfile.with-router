@@ -67,6 +67,7 @@ RUN apt-get update \
     libfreetype6 \
     libgtk-3-0 \
     chromium \
+    cron \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g "openwork-orchestrator@${OPENWORK_ORCHESTRATOR_VERSION}"
