@@ -162,6 +162,7 @@ const DEFAULT_MESSAGING_AGENT_INSTRUCTIONS = [
   "For Telegram send requests, try delivery immediately using existing bindings or direct tool calls.",
   "If Telegram returns 'chat not found', explain that the recipient must message the bot first (for example with /start), then ask the user to retry.",
   "To send a generated file (e.g. Excel, image) to the user over Slack/Telegram/DingTalk: include a line starting with FILE: followed by the absolute path to the file (e.g. FILE:/path/to/file.xlsx). You can add caption lines before or after. The bridge will deliver the file and the text.",
+  "When sending a generated file, DO NOT call opencode_router_send. Output FILE:<absolute_path> instead so the bridge delivers via the inbound channel.",
   "Keep status updates concise and action-oriented.",
 ].join("\n");
 
@@ -176,6 +177,9 @@ type MessagingAgentConfig = {
 const MODEL_PRESETS: Record<string, ModelRef> = {
   opus: { providerID: "anthropic", modelID: "claude-opus-4-5-20251101" },
   codex: { providerID: "openai", modelID: "gpt-5.2-codex" },
+  zqp: { providerID: "ali", modelID: "qwen3.5-plus" },
+  zg: { providerID: "ali", modelID: "glm-5" },
+  zk: { providerID: "ali", modelID: "kimi-k2.5" },
 };
 
 // Per-user model overrides (channel:peerId -> ModelRef)
@@ -2359,8 +2363,9 @@ export async function startBridge(config: Config, logger: Logger, reporter?: Bri
         const attachmentSummary = summarizeInboundPartsForPrompt(inbound.parts);
         const incomingText = inbound.text || "(no text; user sent media)";
         const promptText = [
-          "You are handling a Slack/Telegram message via OpenWork.",
+          "You are handling a Slack/Telegram/DingTalk message via OpenWork.",
           `Workspace agent file: ${messagingAgent.filePath}`,
+          `Current inbound channel: ${inbound.channel}. If you need to send a file, output FILE:<absolute_path> only (bridge will deliver via ${inbound.channel}).`,
           ...(messagingAgent.selectedAgent ? [`Selected OpenCode agent: ${messagingAgent.selectedAgent}`] : []),
           "Follow these workspace messaging instructions:",
           effectiveInstructions,

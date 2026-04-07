@@ -1381,7 +1381,7 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
     sendOpenCodeRouterMessage: (
       workspaceId: string,
       input: {
-        channel: "telegram" | "slack";
+        channel: "telegram" | "slack" | "dingtalk";
         text: string;
         identityId?: string;
         directory?: string;

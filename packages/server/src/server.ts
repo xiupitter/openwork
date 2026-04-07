@@ -2554,8 +2554,8 @@ function createRoutes(config: ServerConfig, approvals: ApprovalService, tokens: 
     const healthPort = normalizeHealthPort(body.healthPort);
     const requestHost = ctx.url.hostname;
 
-    if (channel !== "telegram" && channel !== "slack") {
-      throw new ApiError(400, "invalid_channel", "channel must be 'telegram' or 'slack'");
+    if (channel !== "telegram" && channel !== "slack" && channel !== "dingtalk") {
+      throw new ApiError(400, "invalid_channel", "channel must be 'telegram', 'slack', or 'dingtalk'");
     }
     if (!peerId) {
       throw new ApiError(400, "peer_required", "peerId is required");
@@ -2631,8 +2631,8 @@ function createRoutes(config: ServerConfig, approvals: ApprovalService, tokens: 
     }
     const identityId = requestedId || undefined;
 
-    if (channel !== "telegram" && channel !== "slack") {
-      throw new ApiError(400, "invalid_channel", "channel must be 'telegram' or 'slack'");
+    if (channel !== "telegram" && channel !== "slack" && channel !== "dingtalk") {
+      throw new ApiError(400, "invalid_channel", "channel must be 'telegram', 'slack', or 'dingtalk'");
     }
     if (!directory.trim() && !peerId) {
       throw new ApiError(400, "directory_required", "directory is required when peerId is not provided");
